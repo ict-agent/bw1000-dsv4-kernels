@@ -1,0 +1,43 @@
+{
+  "label": "config_graph_hip_stream",
+  "timestamp": "2026-07-03 15:31:46",
+  "tests": [
+    {
+      "tag": "decode32",
+      "ttft_ms": 256.8,
+      "mean_tpot_ms": 76.7,
+      "p99_tpot_ms": 101.8,
+      "tokens": 32,
+      "total_ms": 2633.6
+    },
+    {
+      "tag": "decode64",
+      "ttft_ms": 290.3,
+      "mean_tpot_ms": 75.9,
+      "p99_tpot_ms": 77.0,
+      "tokens": 64,
+      "total_ms": 5070.5
+    },
+    {
+      "tag": "prefill1k_decode16",
+      "ttft_ms": 272.8,
+      "mean_tpot_ms": 75.9,
+      "p99_tpot_ms": 76.9,
+      "tokens": 16,
+      "total_ms": 1411.8
+    },
+    {
+      "tag": "prefill4k",
+      "ttft_ms": 572.8,
+      "mean_tpot_ms": 0.0,
+      "p99_tpot_ms": 0,
+      "tokens": 1,
+      "total_ms": 572.9
+    },
+    {
+      "tag": "concurrent8x16",
+      "wall_s": 1.243,
+      "agg_tok_s": 102.9
+    }
+  ]
+}

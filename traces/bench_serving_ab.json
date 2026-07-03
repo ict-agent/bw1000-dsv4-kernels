@@ -1,0 +1,24 @@
+{
+  "config": "random_input128_output32_16prompts_concurrency8_seed42",
+  "original": {
+    "mean_ttft_ms": 439.69,
+    "mean_tpot_ms": 117.32,
+    "p99_tpot_ms": 202.67,
+    "output_throughput_tok_s": 49.88,
+    "total_throughput_tok_s": 314.69
+  },
+  "hip_native_ext": {
+    "mean_ttft_ms": 349.52,
+    "mean_tpot_ms": 95.22,
+    "p99_tpot_ms": 126.87,
+    "output_throughput_tok_s": 52.39,
+    "total_throughput_tok_s": 330.50
+  },
+  "improvement": {
+    "ttft": "-20.5%",
+    "tpot": "-18.8%",
+    "p99_tpot": "-37.4%",
+    "output_throughput": "+5.0%",
+    "total_throughput": "+5.0%"
+  }
+}
