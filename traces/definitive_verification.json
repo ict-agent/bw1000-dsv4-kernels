@@ -1,0 +1,142 @@
+{
+  "device": "BW",
+  "pytorch": "2.9.0",
+  "sections": {
+    "bitexact": {
+      "all_exact": true,
+      "results": [
+        {
+          "M": 1,
+          "N": 4096,
+          "quant_bitexact": true,
+          "scale_diff": 0.0
+        },
+        {
+          "M": 1,
+          "N": 2048,
+          "quant_bitexact": true,
+          "scale_diff": 0.0
+        },
+        {
+          "M": 4,
+          "N": 4096,
+          "quant_bitexact": true,
+          "scale_diff": 0.0
+        },
+        {
+          "M": 4,
+          "N": 2048,
+          "quant_bitexact": true,
+          "scale_diff": 0.0
+        },
+        {
+          "M": 16,
+          "N": 4096,
+          "quant_bitexact": true,
+          "scale_diff": 0.0
+        },
+        {
+          "M": 16,
+          "N": 2048,
+          "quant_bitexact": true,
+          "scale_diff": 0.0
+        },
+        {
+          "M": 64,
+          "N": 4096,
+          "quant_bitexact": true,
+          "scale_diff": 0.0
+        },
+        {
+          "M": 64,
+          "N": 2048,
+          "quant_bitexact": true,
+          "scale_diff": 0.0
+        },
+        {
+          "M": 256,
+          "N": 4096,
+          "quant_bitexact": true,
+          "scale_diff": 0.0
+        },
+        {
+          "M": 256,
+          "N": 2048,
+          "quant_bitexact": true,
+          "scale_diff": 0.0
+        },
+        {
+          "M": 1024,
+          "N": 4096,
+          "quant_bitexact": true,
+          "scale_diff": 0.0
+        },
+        {
+          "M": 1024,
+          "N": 2048,
+          "quant_bitexact": true,
+          "scale_diff": 0.0
+        }
+      ]
+    },
+    "engine_fidelity": {
+      "gemm_used": "lightop.moe_gemm_w8a8",
+      "trials": [
+        {
+          "trial": 0,
+          "quant_bitexact": true,
+          "downstream_bitexact": true
+        },
+        {
+          "trial": 1,
+          "quant_bitexact": true,
+          "downstream_bitexact": true
+        },
+        {
+          "trial": 2,
+          "quant_bitexact": true,
+          "downstream_bitexact": true
+        }
+      ],
+      "all_downstream_bitexact": true
+    },
+    "timing": [
+      {
+        "M": 1,
+        "N": 4096,
+        "baseline_ms": 0.0617,
+        "hip_ms": 0.0254,
+        "speedup": 2.43
+      },
+      {
+        "M": 16,
+        "N": 4096,
+        "baseline_ms": 0.0609,
+        "hip_ms": 0.0259,
+        "speedup": 2.36
+      },
+      {
+        "M": 64,
+        "N": 4096,
+        "baseline_ms": 0.0613,
+        "hip_ms": 0.0261,
+        "speedup": 2.35
+      },
+      {
+        "M": 256,
+        "N": 4096,
+        "baseline_ms": 0.0601,
+        "hip_ms": 0.026,
+        "speedup": 2.31
+      },
+      {
+        "M": 1024,
+        "N": 4096,
+        "baseline_ms": 0.0605,
+        "hip_ms": 0.026,
+        "speedup": 2.33
+      }
+    ]
+  },
+  "verdict": "SAFE_TO_INTEGRATE"
+}

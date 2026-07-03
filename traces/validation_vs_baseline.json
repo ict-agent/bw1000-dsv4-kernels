@@ -1,0 +1,164 @@
+[
+  {
+    "kernel": "fused_add_rmsnorm_quant",
+    "M": 1,
+    "N": 4096,
+    "baseline_ms": 0.1186,
+    "optimized_ms": 0.019,
+    "speedup": 6.25,
+    "correct": true,
+    "q_match_rate": 0.9839,
+    "q_max_diff": 1,
+    "s_max_diff": 5e-06,
+    "r_max_diff": 0.0
+  },
+  {
+    "kernel": "fused_add_rmsnorm_quant",
+    "M": 4,
+    "N": 4096,
+    "baseline_ms": 0.1191,
+    "optimized_ms": 0.0188,
+    "speedup": 6.32,
+    "correct": true,
+    "q_match_rate": 0.9761,
+    "q_max_diff": 1,
+    "s_max_diff": 0.000176,
+    "r_max_diff": 0.0
+  },
+  {
+    "kernel": "fused_add_rmsnorm_quant",
+    "M": 16,
+    "N": 4096,
+    "baseline_ms": 0.1194,
+    "optimized_ms": 0.0187,
+    "speedup": 6.38,
+    "correct": true,
+    "q_match_rate": 0.9784,
+    "q_max_diff": 1,
+    "s_max_diff": 0.000239,
+    "r_max_diff": 0.0
+  },
+  {
+    "kernel": "fused_add_rmsnorm_quant",
+    "M": 64,
+    "N": 4096,
+    "baseline_ms": 0.1177,
+    "optimized_ms": 0.019,
+    "speedup": 6.19,
+    "correct": true,
+    "q_match_rate": 0.9785,
+    "q_max_diff": 1,
+    "s_max_diff": 0.000236,
+    "r_max_diff": 0.0
+  },
+  {
+    "kernel": "fused_add_rmsnorm_quant",
+    "M": 256,
+    "N": 4096,
+    "baseline_ms": 0.1174,
+    "optimized_ms": 0.0275,
+    "speedup": 4.27,
+    "correct": true,
+    "q_match_rate": 0.9773,
+    "q_max_diff": 1,
+    "s_max_diff": 0.000242,
+    "r_max_diff": 0.0
+  },
+  {
+    "kernel": "fused_add_rmsnorm_quant",
+    "M": 1024,
+    "N": 4096,
+    "baseline_ms": 0.1187,
+    "optimized_ms": 0.0976,
+    "speedup": 1.22,
+    "correct": true,
+    "q_match_rate": 0.978,
+    "q_max_diff": 1,
+    "s_max_diff": 0.000247,
+    "r_max_diff": 0.0
+  },
+  {
+    "kernel": "fused_silu_mul_quant",
+    "M": 1,
+    "N": 2048,
+    "baseline_ms": 0.1527,
+    "optimized_ms": 0.0097,
+    "speedup": 15.78,
+    "correct": true,
+    "q_match_rate": 0.9858,
+    "q_max_diff": 1
+  },
+  {
+    "kernel": "fused_silu_mul_quant",
+    "M": 4,
+    "N": 2048,
+    "baseline_ms": 0.1517,
+    "optimized_ms": 0.0096,
+    "speedup": 15.76,
+    "correct": true,
+    "q_match_rate": 0.986,
+    "q_max_diff": 1
+  },
+  {
+    "kernel": "fused_silu_mul_quant",
+    "M": 16,
+    "N": 2048,
+    "baseline_ms": 0.1523,
+    "optimized_ms": 0.0096,
+    "speedup": 15.84,
+    "correct": true,
+    "q_match_rate": 0.9845,
+    "q_max_diff": 1
+  },
+  {
+    "kernel": "fused_silu_mul_quant",
+    "M": 64,
+    "N": 2048,
+    "baseline_ms": 0.1528,
+    "optimized_ms": 0.0095,
+    "speedup": 16.02,
+    "correct": true,
+    "q_match_rate": 0.9853,
+    "q_max_diff": 1
+  },
+  {
+    "kernel": "fused_silu_mul_quant",
+    "M": 256,
+    "N": 2048,
+    "baseline_ms": 0.1536,
+    "optimized_ms": 0.0159,
+    "speedup": 9.65,
+    "correct": true,
+    "q_match_rate": 0.9867,
+    "q_max_diff": 1
+  },
+  {
+    "kernel": "fused_silu_mul_quant",
+    "M": 1024,
+    "N": 2048,
+    "baseline_ms": 0.1535,
+    "optimized_ms": 0.067,
+    "speedup": 2.29,
+    "correct": true,
+    "q_match_rate": 0.9861,
+    "q_max_diff": 1
+  },
+  {
+    "kernel": "flash_mla_decode",
+    "seqlen": 1024,
+    "ms": 0.1851,
+    "tflops": 98.6
+  },
+  {
+    "kernel": "flash_mla_decode",
+    "seqlen": 4096,
+    "ms": 1.4583,
+    "tflops": 50.1
+  },
+  {
+    "kernel": "flash_mla_decode",
+    "seqlen": 8192,
+    "ms": 3.3398,
+    "tflops": 43.7
+  }
+]

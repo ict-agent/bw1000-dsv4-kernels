@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-07-01 20:35:14",
+  "accuracy": {
+    "correct": 2,
+    "total": 6
+  },
+  "metrics": {
+    "decode32": {
+      "ttft_ms": 410.0,
+      "mean_tpot_ms": 205.2,
+      "p99_tpot_ms": 217.3,
+      "decode_tok_s": 4.73
+    },
+    "prefill_4k": {
+      "ttft_ms": 490.0,
+      "prefill_tok_s": 8163.0
+    },
+    "concurrent8": {
+      "wall_s": 3.688,
+      "agg_tok_s": 34.7
+    }
+  }
+}

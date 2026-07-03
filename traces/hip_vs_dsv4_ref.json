@@ -1,0 +1,185 @@
+{
+  "device": "BW",
+  "tests": [
+    {
+      "op": "per_token_quant",
+      "M": 1,
+      "N": 4096,
+      "bitexact": true,
+      "ref_ms": 0.1252,
+      "hip_ms": 0.0086,
+      "speedup": 14.59
+    },
+    {
+      "op": "per_token_quant",
+      "M": 16,
+      "N": 4096,
+      "bitexact": false,
+      "ref_ms": 0.1271,
+      "hip_ms": 0.0084,
+      "speedup": 15.15
+    },
+    {
+      "op": "per_token_quant",
+      "M": 64,
+      "N": 4096,
+      "bitexact": false,
+      "ref_ms": 0.1271,
+      "hip_ms": 0.0084,
+      "speedup": 15.18
+    },
+    {
+      "op": "per_token_quant",
+      "M": 256,
+      "N": 4096,
+      "bitexact": false,
+      "ref_ms": 0.1271,
+      "hip_ms": 0.0092,
+      "speedup": 13.8
+    },
+    {
+      "op": "per_token_quant",
+      "M": 1024,
+      "N": 4096,
+      "bitexact": false,
+      "ref_ms": 0.215,
+      "hip_ms": 0.0252,
+      "speedup": 8.53
+    },
+    {
+      "op": "silu_mul",
+      "M": 1,
+      "N": 2048,
+      "maxdiff": 0.0,
+      "ref_ms": 0.0631,
+      "hip_ms": 0.0063,
+      "speedup": 10.05
+    },
+    {
+      "op": "silu_mul",
+      "M": 16,
+      "N": 2048,
+      "maxdiff": 0.0,
+      "ref_ms": 0.0597,
+      "hip_ms": 0.0062,
+      "speedup": 9.57
+    },
+    {
+      "op": "silu_mul",
+      "M": 64,
+      "N": 2048,
+      "maxdiff": 0.0,
+      "ref_ms": 0.0609,
+      "hip_ms": 0.0062,
+      "speedup": 9.87
+    },
+    {
+      "op": "silu_mul",
+      "M": 256,
+      "N": 2048,
+      "maxdiff": 0.0,
+      "ref_ms": 0.0595,
+      "hip_ms": 0.0098,
+      "speedup": 6.06
+    },
+    {
+      "op": "silu_mul_quant",
+      "M": 1,
+      "N": 2048,
+      "maxdiff": 1,
+      "ref_ms": 0.1993,
+      "hip_ms": 0.0072,
+      "speedup": 27.8
+    },
+    {
+      "op": "silu_mul_quant",
+      "M": 16,
+      "N": 2048,
+      "maxdiff": 1,
+      "ref_ms": 0.1998,
+      "hip_ms": 0.0071,
+      "speedup": 27.97
+    },
+    {
+      "op": "silu_mul_quant",
+      "M": 64,
+      "N": 2048,
+      "maxdiff": 1,
+      "ref_ms": 0.1989,
+      "hip_ms": 0.0071,
+      "speedup": 28.06
+    },
+    {
+      "op": "silu_mul_quant",
+      "M": 256,
+      "N": 2048,
+      "maxdiff": 1,
+      "ref_ms": 0.2005,
+      "hip_ms": 0.011,
+      "speedup": 18.22
+    },
+    {
+      "op": "rmsnorm",
+      "M": 1,
+      "N": 512,
+      "maxdiff": 0.015625,
+      "ref_ms": 0.068,
+      "hip_ms": 0.0047,
+      "speedup": 14.36
+    },
+    {
+      "op": "rmsnorm",
+      "M": 64,
+      "N": 512,
+      "maxdiff": 0.03125,
+      "ref_ms": 0.0666,
+      "hip_ms": 0.0052,
+      "speedup": 12.87
+    },
+    {
+      "op": "rmsnorm",
+      "M": 128,
+      "N": 512,
+      "maxdiff": 0.03125,
+      "ref_ms": 0.0663,
+      "hip_ms": 0.0047,
+      "speedup": 13.96
+    },
+    {
+      "op": "add_rmsnorm_quant",
+      "M": 1,
+      "N": 4096,
+      "maxdiff": 1,
+      "ref_ms": 0.2921,
+      "hip_ms": 0.0165,
+      "speedup": 17.66
+    },
+    {
+      "op": "add_rmsnorm_quant",
+      "M": 16,
+      "N": 4096,
+      "maxdiff": 1,
+      "ref_ms": 0.2929,
+      "hip_ms": 0.0166,
+      "speedup": 17.62
+    },
+    {
+      "op": "add_rmsnorm_quant",
+      "M": 64,
+      "N": 4096,
+      "maxdiff": 1,
+      "ref_ms": 0.2927,
+      "hip_ms": 0.0167,
+      "speedup": 17.52
+    },
+    {
+      "op": "add_rmsnorm_quant",
+      "M": 256,
+      "N": 4096,
+      "maxdiff": 1,
+      "ref_ms": 0.2939,
+      "hip_ms": 0.0227,
+      "speedup": 12.95
+    }
+  ]
+}

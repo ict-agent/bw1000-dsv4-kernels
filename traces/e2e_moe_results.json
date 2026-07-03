@@ -1,0 +1,38 @@
+[
+  {
+    "batch_tokens": 4,
+    "baseline_ms": 0.8343,
+    "optimized_ms": 0.3296,
+    "speedup": 2.53
+  },
+  {
+    "batch_tokens": 8,
+    "baseline_ms": 0.831,
+    "optimized_ms": 0.3235,
+    "speedup": 2.57
+  },
+  {
+    "batch_tokens": 16,
+    "baseline_ms": 0.8228,
+    "optimized_ms": 0.3215,
+    "speedup": 2.56
+  },
+  {
+    "batch_tokens": 32,
+    "baseline_ms": 0.8212,
+    "optimized_ms": 0.3197,
+    "speedup": 2.57
+  },
+  {
+    "batch_tokens": 64,
+    "baseline_ms": 0.8276,
+    "optimized_ms": 0.3205,
+    "speedup": 2.58
+  },
+  {
+    "batch_tokens": 128,
+    "baseline_ms": 0.8274,
+    "optimized_ms": 0.4043,
+    "speedup": 2.05
+  }
+]
