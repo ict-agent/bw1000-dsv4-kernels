@@ -1,0 +1,26 @@
+{
+  "config": "original_server_graph_enabled_4k_context",
+  "results": {
+    "input_256": {
+      "input_len": 256, "output_len": 32, "num_prompts": 8, "concurrency": 4,
+      "request_throughput": 1.95, "output_tok_s": 34.63, "total_tok_s": 224.83,
+      "mean_ttft_ms": 350.73, "mean_tpot_ms": 75.02, "p99_tpot_ms": 88.41
+    },
+    "input_1024": {
+      "input_len": 1024, "output_len": 32, "num_prompts": 8, "concurrency": 4,
+      "request_throughput": 1.91, "output_tok_s": 33.85, "total_tok_s": 647.01,
+      "mean_ttft_ms": 444.91, "mean_tpot_ms": 74.88, "p99_tpot_ms": 85.73
+    },
+    "input_3072": {
+      "input_len": 3072, "output_len": 32, "num_prompts": 8, "concurrency": 4,
+      "request_throughput": 1.65, "output_tok_s": 21.89, "total_tok_s": 2065.59,
+      "mean_ttft_ms": 717.79, "mean_tpot_ms": 83.32, "p99_tpot_ms": 116.04
+    },
+    "input_4096": {
+      "input_len": 4096, "output_len": 32, "num_prompts": 8, "concurrency": 4,
+      "request_throughput": 1.06, "output_tok_s": 18.75, "total_tok_s": 2386.24,
+      "mean_ttft_ms": 1424.27, "mean_tpot_ms": 125.17, "p99_tpot_ms": 230.87
+    }
+  },
+  "note": "16k input not possible with context_length=4096. Need to restart with larger context for 8k-16k."
+}
