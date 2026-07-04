@@ -1,0 +1,109 @@
+{
+  "tests": [
+    {
+      "M": 1,
+      "N": 4096,
+      "K": 4096,
+      "lightop_smooth": 0.0183,
+      "lightop_asm": null,
+      "triton_scaled": 0.0261,
+      "hipblaslt_intmm": null
+    },
+    {
+      "M": 6,
+      "N": 4096,
+      "K": 2048,
+      "lightop_smooth": 0.0132,
+      "lightop_asm": null,
+      "triton_scaled": 0.0256,
+      "hipblaslt_intmm": null
+    },
+    {
+      "M": 64,
+      "N": 4096,
+      "K": 4096,
+      "lightop_smooth": 0.0219,
+      "lightop_asm": null,
+      "triton_scaled": 0.0273,
+      "hipblaslt_intmm": null
+    },
+    {
+      "M": 256,
+      "N": 4096,
+      "K": 4096,
+      "lightop_smooth": 0.0366,
+      "lightop_asm": null,
+      "triton_scaled": 0.0367,
+      "hipblaslt_intmm": null
+    },
+    {
+      "kernel": "quant_comparison",
+      "M": 1,
+      "sota_ms": 0.0633,
+      "hip_2pass_ms": 0.0113,
+      "online_1pass_ms": 1.9497
+    },
+    {
+      "kernel": "quant_comparison",
+      "M": 64,
+      "sota_ms": 0.0622,
+      "hip_2pass_ms": 0.0114,
+      "online_1pass_ms": 2.0768
+    },
+    {
+      "kernel": "quant_comparison",
+      "M": 256,
+      "sota_ms": 0.0625,
+      "hip_2pass_ms": 0.0113,
+      "online_1pass_ms": 2.1045
+    },
+    {
+      "kernel": "moe_chain",
+      "M": 1,
+      "separate_ms": 0.3077,
+      "fused_ms": 0.0456,
+      "speedup": 6.75
+    },
+    {
+      "kernel": "moe_chain",
+      "M": 64,
+      "separate_ms": 0.3102,
+      "fused_ms": 0.0457,
+      "speedup": 6.78
+    },
+    {
+      "kernel": "moe_chain",
+      "M": 256,
+      "separate_ms": 0.3088,
+      "fused_ms": 0.0448,
+      "speedup": 6.9
+    },
+    {
+      "kernel": "quant_backend_comparison",
+      "M": 1,
+      "sota_ms": 0.0596,
+      "native_ms": 0.0216,
+      "ctypes_ms": 0.0083,
+      "native_speedup": 2.75,
+      "ctypes_speedup": 7.16
+    },
+    {
+      "kernel": "quant_backend_comparison",
+      "M": 64,
+      "sota_ms": 0.0597,
+      "native_ms": 0.0217,
+      "ctypes_ms": 0.0083,
+      "native_speedup": 2.75,
+      "ctypes_speedup": 7.22
+    },
+    {
+      "kernel": "quant_backend_comparison",
+      "M": 256,
+      "sota_ms": 0.06,
+      "native_ms": 0.0213,
+      "ctypes_ms": 0.0092,
+      "native_speedup": 2.81,
+      "ctypes_speedup": 6.51
+    }
+  ]
+}
