@@ -1,0 +1,38 @@
+[
+  {
+    "M": 32,
+    "diff": 2297856.0,
+    "intmm_scaled_ms": 0.0698,
+    "intmm_raw_ms": 0.0218,
+    "sota_ms": 0.0195,
+    "triton_ms": 0.0263,
+    "ratio": 0.28
+  },
+  {
+    "M": 64,
+    "diff": 2543616.0,
+    "intmm_scaled_ms": 0.0702,
+    "intmm_raw_ms": 0.0223,
+    "sota_ms": 0.0221,
+    "triton_ms": 0.0261,
+    "ratio": 0.31
+  },
+  {
+    "M": 256,
+    "diff": 2449408.0,
+    "intmm_scaled_ms": 0.0712,
+    "intmm_raw_ms": 0.0334,
+    "sota_ms": 0.0368,
+    "triton_ms": 0.0369,
+    "ratio": 0.52
+  },
+  {
+    "M": 1024,
+    "diff": 2691072.0,
+    "intmm_scaled_ms": 0.2019,
+    "intmm_raw_ms": 0.0644,
+    "sota_ms": 0.0686,
+    "triton_ms": 0.0693,
+    "ratio": 0.34
+  }
+]

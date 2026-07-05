@@ -1,0 +1,38 @@
+[
+  {
+    "M": 32,
+    "diff": 2043904.0,
+    "fused_ms": 0.0257,
+    "pt_scale_ms": 0.0724,
+    "sota_ms": 0.0196,
+    "triton_ms": 0.0275,
+    "ratio": 0.76
+  },
+  {
+    "M": 64,
+    "diff": 2539520.0,
+    "fused_ms": 0.0286,
+    "pt_scale_ms": 0.0723,
+    "sota_ms": 0.0221,
+    "triton_ms": 0.0272,
+    "ratio": 0.77
+  },
+  {
+    "M": 256,
+    "diff": 2433024.0,
+    "fused_ms": 0.0459,
+    "pt_scale_ms": 0.0727,
+    "sota_ms": 0.0368,
+    "triton_ms": 0.0369,
+    "ratio": 0.8
+  },
+  {
+    "M": 1024,
+    "diff": 2670592.0,
+    "fused_ms": 0.1208,
+    "pt_scale_ms": 0.2057,
+    "sota_ms": 0.0685,
+    "triton_ms": 0.0685,
+    "ratio": 0.57
+  }
+]
