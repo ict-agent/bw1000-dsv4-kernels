@@ -1,0 +1,29 @@
+[
+  {
+    "M": 32,
+    "raw_ms": 0.022,
+    "fused_ms": 0.0257,
+    "pt_ms": 0.0743,
+    "sota_ms": 0.0195,
+    "triton_ms": 0.0281,
+    "fused_ratio": 0.76
+  },
+  {
+    "M": 64,
+    "raw_ms": 0.0232,
+    "fused_ms": 0.0286,
+    "pt_ms": 0.0715,
+    "sota_ms": 0.022,
+    "triton_ms": 0.0268,
+    "fused_ratio": 0.77
+  },
+  {
+    "M": 256,
+    "raw_ms": 0.0314,
+    "fused_ms": 0.0461,
+    "pt_ms": 0.0717,
+    "sota_ms": 0.0368,
+    "triton_ms": 0.0368,
+    "fused_ratio": 0.8
+  }
+]

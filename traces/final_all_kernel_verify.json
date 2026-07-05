@@ -1,0 +1,94 @@
+{
+  "tests": [
+    {
+      "kernel": "per_token_quant",
+      "M": 1,
+      "bitexact": true,
+      "speedup": 5.51
+    },
+    {
+      "kernel": "per_token_quant",
+      "M": 64,
+      "bitexact": true,
+      "speedup": 5.51
+    },
+    {
+      "kernel": "per_token_quant",
+      "M": 256,
+      "bitexact": true,
+      "speedup": 5.47
+    },
+    {
+      "kernel": "rmsnorm",
+      "M": 1,
+      "maxdiff": 0.0076,
+      "speedup": 4.42
+    },
+    {
+      "kernel": "rmsnorm",
+      "M": 64,
+      "maxdiff": 0.0078,
+      "speedup": 4.43
+    },
+    {
+      "kernel": "silu_and_mul",
+      "M": 1,
+      "maxdiff": 0.0,
+      "speedup": 8.54
+    },
+    {
+      "kernel": "silu_and_mul",
+      "M": 64,
+      "maxdiff": 0.0,
+      "speedup": 7.56
+    },
+    {
+      "kernel": "silu_mul_quant",
+      "M": 1,
+      "maxdiff": 1,
+      "speedup": 12.34
+    },
+    {
+      "kernel": "silu_mul_quant",
+      "M": 64,
+      "maxdiff": 1,
+      "speedup": 12.13
+    },
+    {
+      "kernel": "add_rmsnorm_quant",
+      "M": 1,
+      "maxdiff": 1,
+      "speedup": 4.44
+    },
+    {
+      "kernel": "add_rmsnorm_quant",
+      "M": 64,
+      "maxdiff": 1,
+      "speedup": 4.31
+    },
+    {
+      "kernel": "w8a8_gemm_fused",
+      "M": 32,
+      "diff": 2342912.0,
+      "fused_ms": 0.0256,
+      "sota_ms": 0.0193,
+      "ratio": 0.76
+    },
+    {
+      "kernel": "w8a8_gemm_fused",
+      "M": 64,
+      "diff": 2310144.0,
+      "fused_ms": 0.0283,
+      "sota_ms": 0.0219,
+      "ratio": 0.78
+    },
+    {
+      "kernel": "w8a8_gemm_fused",
+      "M": 256,
+      "diff": 2408448.0,
+      "fused_ms": 0.0458,
+      "sota_ms": 0.0366,
+      "ratio": 0.8
+    }
+  ]
+}
