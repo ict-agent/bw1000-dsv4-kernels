@@ -1,9 +1,0 @@
-{
-  "trials": 3,
-  "quant_bitexact": true,
-  "downstream_bitexact": true,
-  "scale_diff": 0.0,
-  "standalone_kernel_speedup": 7.5,
-  "verdict": "SAFE TO INTEGRATE",
-  "note": "HIP exact kernel produces bit-identical quantized tensor+scale to lmslim Triton; downstream lightop.moe_gemm_w8a8 output bit-identical across 3 trials"
-}
