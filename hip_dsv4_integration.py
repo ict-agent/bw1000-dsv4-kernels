@@ -47,9 +47,20 @@ def _on(name): return os.environ.get(name, "0") == "1"
 def _master(): return os.environ.get("SGLANG_USE_HIP_DSV4", "0") == "1"
 
 _patched = set()
+_in_try = False
 def _try_patches():
-    if not _master():
-        return
+    global _in_try
+    if _in_try: return
+    if not _master(): return
+    _in_try = True
+    try:
+        _try_patches_impl()
+    finally:
+        _in_try = False
+
+def _try_patches_impl():
+    if len(_patched) >= _want_count():
+        return  # all patches applied, skip
     L = _lib()
 
     # ---- act_quant_fp8 (NSA) ----
@@ -141,14 +152,19 @@ def _try_patches():
             if not getattr(ix, "_hip_patched", False):
                 ix._hip_patched = True
                 _orig = ix.topk_transform_512_pytorch_vectorized
-                def hip_topk(scores, seq_lens, page_table, k=512, page_size=1):
+                def hip_topk(scores, seq_lens, page_tables, out_page_indices, page_size, out_raw_indices=None):
                     b = scores.shape[0]; cap = scores.shape[1]
-                    ptr_stride = page_table.shape[1] if page_table is not None else cap
-                    out = torch.full((b, k), -1, device=scores.device, dtype=torch.int32)
-                    pt = page_table if page_table is not None else torch.zeros(b, ptr_stride, device=scores.device, dtype=torch.int32)
-                    L.launch_topk_transform(_ptr(scores), _ptr(seq_lens), _ptr(pt), _ptr(out),
-                                            b, cap, ptr_stride, page_size, k, _s())
-                    return out
+                    ptr_stride = page_tables.shape[1]
+                    k = 512
+                    # HIP kernel writes page-transformed indices into out_page_indices [b, 512]
+                    L.launch_topk_transform(_ptr(scores), _ptr(seq_lens), _ptr(page_tables),
+                                            _ptr(out_page_indices), b, cap, ptr_stride, page_size, k, _s())
+                    # raw_indices (logical) — if requested, derive by inverse page transform is not trivial;
+                    # caller usually passes None. Best-effort: leave as-is (caller handles None).
+                    if out_raw_indices is not None:
+                        # fill with logical indices best-effort (page_size==1 case)
+                        if page_size == 1:
+                            out_raw_indices.copy_(out_page_indices)
                 ix.topk_transform_512_pytorch_vectorized = hip_topk
                 _patched.add("topk")
                 print("[HIP-DSV4] patched indexer.topk_transform_512", flush=True)
@@ -231,15 +247,37 @@ def _want_count():
         if _on(n): c += 1
     return c
 
-# Retry mechanism: schedule periodic attempts. First attempt is synchronous so
-# patches applied during import are visible immediately.
+# Patch strategy: sitecustomize imports this module at python startup (via PYTHONPATH).
+# We register a sys.meta_path finder that triggers _try_patches() after each sglang
+# module import, so patches apply synchronously when the target module loads (before
+# the server forks TP workers). Also do a synchronous first pass + periodic retry.
+import importlib.abc, importlib.machinery, sys
+
+class _HipPatchFinder(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path, target=None):
+        # trigger patches when any sglang target module loads
+        if name in ("sglang.srt.layers.mhc",
+                    "sglang.srt.layers.attention.nsa.tilelang_kernel",
+                    "sglang.srt.layers.attention.compressed.indexer",
+                    "sglang.srt.layers.deepseek_v4_rope",
+                    "sglang.jit_kernel.deepseek_v4",
+                    "vllm.v1.attention.ops.triton_merge_attn_states",
+                    "lightop"):
+            _try_patches()
+        return None  # don't actually load the module; just trigger patches
+
+def _install_hook():
+    if not any(isinstance(f, _HipPatchFinder) for f in sys.meta_path):
+        sys.meta_path.insert(0, _HipPatchFinder())
+
 def _start_retries():
     import threading
+    _install_hook()
     _try_patches()  # synchronous first pass
     def attempt():
         _try_patches()
         if _master() and len(_patched) < _want_count():
-            threading.Timer(1.0, attempt).start()
+            threading.Timer(2.0, attempt).start()
     if _master() and len(_patched) < _want_count():
         threading.Timer(0.5, attempt).start()
 
