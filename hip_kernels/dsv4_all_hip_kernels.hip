@@ -59,15 +59,30 @@ __global__ void ptgq_kernel(const __hip_bfloat16* x,int8_t* q,float* s,
     int tid=threadIdx.x;
     float lmax=0.f;
     for(int i=tid;i<g_len;i+=BS){float v=b2f(x[row*N+g_start+i]);lmax=fmaxf(lmax,fabsf(v));}
-    __shared__ float s_lmax;
+    // Fix: use full block reduction, not just wavefront 0
+    // Step 1: wavefront reduce
+    int lane=tid&63;
+    int wid=tid>>6;
     lmax=wmax64(lmax);
-    if(tid==0){float am=fmaxf(lmax,1e-10f);s_lmax=127.f/am;s[row*(N/gs)+group]=am/127.f;}
+    // Step 2: cross-wavefront via shared memory
+    __shared__ float s_red[16]; // enough for up to 16 wavefronts
+    if(lane==0) s_red[wid]=lmax;
+    __syncthreads();
+    int num_wf=(BS+63)/64;
+    // All threads read all wavefront maxes and reduce
+    float gmax=0.f;
+    for(int w=0;w<num_wf;w++) gmax=fmaxf(gmax,s_red[w]);
+    __shared__ float s_lmax;
+    if(tid==0){float am=fmaxf(gmax,1e-10f);s_lmax=127.f/am;s[row*(N/gs)+group]=am/127.f;}
     __syncthreads();
     float inv=s_lmax;
     for(int i=tid;i<g_len;i+=BS){
         float v=b2f(x[row*N+g_start+i]);
-        int qi=(int)round_he(v*inv);qi=max(-128,min(127,qi));
-        q[row*N+g_start+i]=(int8_t)qi;}
+        // Triton uses: clamp(y / y_s, -128, 127).to(int8) = truncation toward zero
+        float qf = v / (s[row*(N/gs)+group]);  // divide by scale, not multiply by inv
+        qf = fmaxf(-128.f, fminf(127.f, qf));
+        q[row*N+g_start+i]=(int8_t)(int)qf;  // (int) truncates toward zero
+    }
 }
 
 // ============================================================
