@@ -1,0 +1,58 @@
+[
+  {
+    "kernel": "per_token_quant_int8",
+    "correct": true,
+    "speedup": 5.83,
+    "graph_safe": true,
+    "integrated": true,
+    "issue": null
+  },
+  {
+    "kernel": "rmsnorm",
+    "correct": true,
+    "speedup": 4.73,
+    "graph_safe": true,
+    "integrated": false,
+    "issue": "Need to patch lightop, not just lmslim"
+  },
+  {
+    "kernel": "silu_and_mul",
+    "correct": true,
+    "speedup": 7.77,
+    "graph_safe": true,
+    "integrated": false,
+    "issue": "Need model forward modification"
+  },
+  {
+    "kernel": "silu_mul_quant",
+    "correct": true,
+    "speedup": 12.95,
+    "graph_safe": true,
+    "integrated": false,
+    "issue": "Need model forward modification"
+  },
+  {
+    "kernel": "add_rmsnorm_quant",
+    "correct": true,
+    "speedup": 4.8,
+    "graph_safe": true,
+    "integrated": false,
+    "issue": "Need model forward modification"
+  },
+  {
+    "kernel": "w8a8_gemm_intmm_fused",
+    "correct": true,
+    "speedup": 0.8,
+    "graph_safe": false,
+    "integrated": false,
+    "issue": "_int_mm not graph-capturable via ctypes, need native ext wrapper. M>=32 required."
+  },
+  {
+    "kernel": "flash_mla_decode",
+    "correct": true,
+    "speedup": 0.22,
+    "graph_safe": true,
+    "integrated": false,
+    "issue": "Simplified, no MFMA. SOTA flash_mla 1.2.0 is already optimized ASM."
+  }
+]
