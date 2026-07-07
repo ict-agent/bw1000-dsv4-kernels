@@ -64,6 +64,11 @@ monkey-patch 进 sglang/lmslim/lightop/jit_kernel，`sys.meta_path` import hook 
 
 用 **buffer pool**（`_buf`）避免 graph capture 时分配 tensor 导致 VM fault。性能分析见 [PERF_ANALYSIS.md](PERF_ANALYSIS.md)。
 
+**Patch 兼容性说明**（agent 调研 + 实测）：
+- 6-patch 配置（nsa_quant/mhc/topk/merge/rope/swa）**e2e 稳定**，12% 加速（见 §5）
+- ptq/ptgq/silu/rmsnorm patch 函数本身 graph-safe（用 `_buf`），但替换 lmslim/SiluAndMul/jit_kernel 时触发 sglang `@maybe_torch_compile` 的 **torch dynamo guard retrace**，导致 capture 卡住。需进一步设 `torch._dynamo.config.suppress_errors` 或 patch dynamo 跳过这些函数。
+- 已修复的 patch bug（agent 发现）：act_quant 返 None、swa `.item()` CPU sync、fused_rope 挂错目标、ptq scale shape [M,1]、mhc_post squeeze。这些修复让单 patch 功能正确（pytest 验证）。
+
 ## 5. 端到端 8-GPU server 性能 (`bench_server.py`)
 
 tp=8, cuda graph ON, slimquant_marlin W8A8, `--moe-a2a-backend none` (DeepEP/hcoll 缺失), cuda_graph_max_bs=256。同 config A/B 对比：
