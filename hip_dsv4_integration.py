@@ -46,6 +46,18 @@ def _ptr(t): return t.data_ptr()
 def _on(name): return os.environ.get(name, "0") == "1"
 def _master(): return os.environ.get("SGLANG_USE_HIP_DSV4", "0") == "1"
 
+# Static output buffer pool: graph-capture-safe. Captures a fixed pointer once;
+# replays write to the same buffer. Keyed by (shape,dtype) so each captured graph
+# batch-size gets its own stable buffer. Buffers are module-level (never freed).
+_buf_pool = {}
+def _buf(shape, dtype, device):
+    key = (tuple(shape), dtype, str(device))
+    b = _buf_pool.get(key)
+    if b is None or b.shape != torch.Size(shape):
+        b = torch.empty(shape, device=device, dtype=dtype)
+        _buf_pool[key] = b
+    return b
+
 _patched = set()
 _in_try = False
 def _try_patches():
@@ -91,9 +103,10 @@ def _try_patches_impl():
                 def hip_sinkhorn(mixes, hc_scale, hc_base, hc_mult=4, sinkhorn_iters=20, eps=1e-6):
                     b, s, _ = mixes.size()
                     n = b * s
-                    pre = torch.empty(b, s, hc_mult, device=mixes.device, dtype=torch.float32)
-                    post = torch.empty(b, s, hc_mult, device=mixes.device, dtype=torch.float32)
-                    comb = torch.empty(b, s, hc_mult, hc_mult, device=mixes.device, dtype=torch.float32)
+                    # static buffers (graph-capture-safe: stable pointer across replays)
+                    pre = _buf((b, s, hc_mult), torch.float32, mixes.device)
+                    post = _buf((b, s, hc_mult), torch.float32, mixes.device)
+                    comb = _buf((b, s, hc_mult, hc_mult), torch.float32, mixes.device)
                     L.launch_hc_split_sinkhorn(_ptr(mixes), _ptr(hc_scale), _ptr(hc_base),
                                                _ptr(pre), _ptr(post), _ptr(comb), n, _s())
                     return pre, post, comb
@@ -112,7 +125,7 @@ def _try_patches_impl():
                     n = comb_res_mix.shape[0]; hc = comb_res_mix.shape[1] if comb_res_mix.dim()==3 else comb_res_mix.shape[-1]
                     # comb_res_mix:[n,hc,hc] fp32, residual:[n,hc,h] bf16, post_layer_mix:[n,hc] fp32, x:[n,h] bf16
                     hidden = x.shape[-1]
-                    out = torch.empty(n, residual.shape[1], hidden, device=x.device, dtype=x.dtype)
+                    out = _buf((n, residual.shape[1], hidden), x.dtype, x.device)
                     L.launch_mhc_post(_ptr(comb_res_mix), _ptr(residual), _ptr(post_layer_mix),
                                       _ptr(x), _ptr(out), n, hidden, _s())
                     return out
@@ -204,13 +217,10 @@ def _try_patches_impl():
             if not getattr(tm, "_hip_patched", False):
                 tm._hip_patched = True
                 _orig = tm.merge_attn_states
-                def hip_merge(prefix_output, prefix_lse, suffix_output, suffix_lse,
-                              output=None, output_lse=None, *a, **kw):
+                def hip_merge(output, prefix_output, prefix_lse, suffix_output, suffix_lse, output_lse=None):
                     nt = prefix_output.shape[0]; nh = prefix_output.shape[1]; hs = prefix_output.shape[2]
-                    if output is None:
-                        output = torch.empty_like(prefix_output)
                     if output_lse is None:
-                        output_lse = torch.empty(nh, nt, device=prefix_output.device, dtype=torch.float32)
+                        output_lse = _buf((nh, nt), torch.float32, prefix_output.device)
                     L.launch_merge_attn_states(_ptr(output), _ptr(output_lse),
                                                 _ptr(prefix_output), _ptr(prefix_lse),
                                                 _ptr(suffix_output), _ptr(suffix_lse),

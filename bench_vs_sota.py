@@ -76,11 +76,17 @@ for M in [1,64,256]:
     q=torch.empty(M,N,device=DEV,dtype=torch.int8);sc=torch.empty(M,ng,device=DEV,dtype=torch.float32)
     rec("per_token_group_quant_int8",M,bench(lambda:sota_ptgq(x,gs)),bench(lambda:lib.launch_ptgq(x.data_ptr(),q.data_ptr(),sc.data_ptr(),M,N,gs,S)),"lmslim/triton")
 
-# 3. rmsnorm_self (sglang jit_kernel = SOTA; triton fallback not available)
-for M in [1,64,128]:
-    N=C.HEAD_DIM;x=torch.randn(M,N,device=DEV,dtype=bf)
-    if SOTA_RMS_JIT:
-        rec("rmsnorm_self",M,bench(lambda:SOTA_RMS_JIT(x.clone(),1e-6)),bench(lambda:(x.clone(),lib.launch_rmsnorm_self(x.data_ptr(),M,N,1e-6,S))[1]),"sglang/jit_kernel")
+# 3. rmsnorm_self (lightop DCU SOTA; jit_kernel may fail to JIT-compile)
+try:
+    import lightop
+    for M in [1,64,128]:
+        N=C.HEAD_DIM;x=torch.randn(M,N,device=DEV,dtype=bf);w=torch.ones(N,device=DEV,dtype=bf)
+        def sota_rms():
+            return lightop.gemma_rmsnorm(x.clone(), w, 1e-6)
+        if SOTA_RMS_JIT:
+            rec("rmsnorm_self",M,bench(lambda:SOTA_RMS_JIT(x.clone(),1e-6)),bench(lambda:(x.clone(),lib.launch_rmsnorm_self(x.data_ptr(),M,N,1e-6,S))[1]),"sglang/jit_kernel")
+        rec("rmsnorm_self",M,bench(sota_rms),bench(lambda:(x.clone(),lib.launch_rmsnorm_self(x.data_ptr(),M,N,1e-6,S))[1]),"lightop/DCU")
+except Exception as e: print("  rmsnorm skip:",str(e)[:80])
 
 # 4. fused_rope (sglang jit_kernel + triton = SOTA)
 def precompute(dim,sl):
@@ -92,7 +98,8 @@ for nt in [1,64,256]:
     nq=8;q=torch.randn(nt,nq,C.QK_ROPE_HEAD_DIM,device=DEV,dtype=bf);pos=torch.arange(nt,device=DEV,dtype=torch.int32)
     fc_flat=torch.view_as_real(fc).flatten(-2).contiguous()  # [sl, rd] interleaved
     if SOTA_ROPE_JIT: rec("fused_rope",nt,bench(lambda:SOTA_ROPE_JIT(q.clone(),None,fc[pos],pos,False)),bench(lambda:lib.launch_fused_rope(q.data_ptr(),0,fc_flat.data_ptr(),pos.data_ptr(),nt,nq,0,C.QK_ROPE_HEAD_DIM,0,S)),"sglang/jit_kernel")
-    rec("fused_rope_triton",nt,bench(lambda:sota_rope_triton(q.clone(),None,fc[pos],pos)),bench(lambda:lib.launch_fused_rope(q.data_ptr(),0,fc_flat.data_ptr(),pos.data_ptr(),nt,nq,0,C.QK_ROPE_HEAD_DIM,0,S)),"sglang/triton")
+    # triton rope: signature (x, freqs_cis, positions=None, inverse=False) -> Tensor; no k param
+    rec("fused_rope_triton",nt,bench(lambda:sota_rope_triton(q.clone(),fc[pos],pos)),bench(lambda:lib.launch_fused_rope(q.data_ptr(),0,fc_flat.data_ptr(),pos.data_ptr(),nt,nq,0,C.QK_ROPE_HEAD_DIM,0,S)),"sglang/triton")
 
 # 5. silu_and_mul (torch ref = SOTA; no vendor fused)
 for M in [1,64,256]:
