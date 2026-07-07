@@ -183,10 +183,10 @@ __global__ void ptgq_kernel(const __hip_bfloat16* x,int8_t* q,float* s,
 }
 
 // ============================================================
-// 3. rmsnorm_self (in-place)
+// 3. rmsnorm_self (out-param: reads x, writes out)
 // ============================================================
 template<int BS,int EPT>
-__global__ void rmsnorm_self_kernel(__hip_bfloat16* x,int M,int N,float eps){
+__global__ void rmsnorm_self_kernel(const __hip_bfloat16* x, __hip_bfloat16* out, int M, int N, float eps){
     int row=blockIdx.x; if(row>=M)return;
     int tid=threadIdx.x, off=row*N;
     __shared__ float s_rrms, s_red[BS/64+1];
@@ -199,7 +199,7 @@ __global__ void rmsnorm_self_kernel(__hip_bfloat16* x,int M,int N,float eps){
         if(lane==0)s_rrms=rsqrtf(ss/(float)N+eps);}
     __syncthreads(); float rrms=s_rrms;
     #pragma unroll
-    for(int i=0;i<EPT;i++){int idx=tid+i*BS; if(idx<N)x[off+idx]=f2b(vals[i]*rrms);}
+    for(int i=0;i<EPT;i++){int idx=tid+i*BS; if(idx<N)out[off+idx]=f2b(vals[i]*rrms);}
 }
 
 // ============================================================
@@ -874,9 +874,9 @@ void launch_ptgq(const void* x,void* q,void* s,int M,int N,int gs,hipStream_t st
     int ngroups=(N+gs-1)/gs;
     dim3 grid(M,ngroups); dim3 block(BS);
     ptgq_kernel<BS><<<grid,block,0,st>>>((const __hip_bfloat16*)x,(int8_t*)q,(float*)s,M,N,gs);}
-void launch_rmsnorm_self(void* x,int M,int N,float eps,hipStream_t st){
+void launch_rmsnorm_self(const void* x, void* out, int M, int N, float eps, hipStream_t st){
     constexpr int BS=256,EPT=16; int sm=(BS/64+1)*4;
-    rmsnorm_self_kernel<BS,EPT><<<M,BS,sm,st>>>((__hip_bfloat16*)x,M,N,eps);}
+    rmsnorm_self_kernel<BS,EPT><<<M,BS,sm,st>>>((const __hip_bfloat16*)x,(__hip_bfloat16*)out,M,N,eps);}
 void launch_fused_rope(void* q,void* k,const void* freqs_cis,const void* positions,
     int num_tokens,int num_q_heads,int num_k_heads,int rope_dim,int has_k,hipStream_t st){
     int total_heads = num_q_heads + (has_k ? num_k_heads : 0);

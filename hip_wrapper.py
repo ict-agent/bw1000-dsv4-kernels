@@ -31,7 +31,7 @@ P = ctypes.c_void_p
 # argtypes
 _LIB.launch_ptq.argtypes = [P,P,P,ctypes.c_int,ctypes.c_int,P]
 _LIB.launch_ptgq.argtypes = [P,P,P,ctypes.c_int,ctypes.c_int,ctypes.c_int,P]
-_LIB.launch_rmsnorm_self.argtypes = [P,ctypes.c_int,ctypes.c_int,ctypes.c_float,P]
+_LIB.launch_rmsnorm_self.argtypes = [P,P,ctypes.c_int,ctypes.c_int,ctypes.c_float,P]
 _LIB.launch_fused_rope.argtypes = [P,P,P,P,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,P]
 _LIB.launch_silu_mul.argtypes = [P,P,P,ctypes.c_int,ctypes.c_int,P]
 _LIB.launch_silu_mul_split.argtypes = [P,P,ctypes.c_int,ctypes.c_int,P]
@@ -94,15 +94,13 @@ def silu_and_mul(x):
     _LIB.launch_silu_mul_split(x.data_ptr(), out.data_ptr(), M, d, _s())
     return out
 
-# 4. rmsnorm_self  (aligned with jit_kernel: q [*,head_dim] -> out same shape, in-place ok)
+# 4. rmsnorm_self  (aligned with jit_kernel: q [*,head_dim] -> out NEW tensor, reads q writes out)
 def rmsnorm_self(q, eps=1e-6):
-    # q is contiguous [M, n_heads, head_dim] or [M, head_dim]; in-place normalize
-    orig_shape = q.shape
-    N = orig_shape[-1]
+    out = _buf(tuple(q.shape), q.dtype, q.device, "rms_out")
+    N = q.shape[-1]
     M = q.numel() // N
-    # in-place: launch on q directly (graph-safe, q ptr stable from caller)
-    _LIB.launch_rmsnorm_self(q.data_ptr(), M, N, eps, _s())
-    return q
+    _LIB.launch_rmsnorm_self(q.data_ptr(), out.data_ptr(), M, N, eps, _s())
+    return out
 
 # 5. fused_rope  (aligned with jit_kernel: in-place q/k, freqs_cis complex)
 def fused_rope(q, k, freqs_cis, positions, inverse=False):
