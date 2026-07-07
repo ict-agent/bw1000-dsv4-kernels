@@ -62,27 +62,29 @@ monkey-patch 进 sglang/lmslim/lightop/jit_kernel，`sys.meta_path` import hook 
 | SGLANG_HIP_ROPE | `deepseek_v4_rope.apply_rotary_emb` | ✅ |
 | SGLANG_HIP_SWA | `jit_kernel.tilelang_make_swa_prefill_indices` | ✅ |
 
-用 **buffer pool**（`_buf`）避免 graph capture 时分配 tensor 导致 VM fault。性能分析见 [PERF_ANALYSIS.md](PERF_ANALYSIS.md)。
+用 **buffer pool**（`_buf`，name-tagged 避免 alias）避免 graph capture 时分配 tensor 导致 VM fault。**10-patch e2e 稳定不 crash**（新 wrapper 架构解决了之前的 dynamo/OOM 问题——wrapper 层最小化 Python ops，buffer pool 静态分配，mem_frac=0.76 给 pool 留空间）。性能分析见 [PERF_ANALYSIS.md](PERF_ANALYSIS.md)。
 
-**Patch 兼容性说明**（agent 调研 + 实测）：
-- 6-patch 配置（nsa_quant/mhc/topk/merge/rope/swa）**e2e 稳定**，12% 加速（见 §5）
-- ptq/ptgq/silu/rmsnorm patch 函数本身 graph-safe（用 `_buf`），但替换 lmslim/SiluAndMul/jit_kernel 时触发 sglang `@maybe_torch_compile` 的 **torch dynamo guard retrace**，导致 capture 卡住。需进一步设 `torch._dynamo.config.suppress_errors` 或 patch dynamo 跳过这些函数。
-- 已修复的 patch bug（agent 发现）：act_quant 返 None、swa `.item()` CPU sync、fused_rope 挂错目标、ptq scale shape [M,1]、mhc_post squeeze。这些修复让单 patch 功能正确（pytest 验证）。
+**三层架构**：
+- Layer 1: `dsv4_all_hip_kernels.hip` — HIP kernel（功能正确性，raw ctypes launch）
+- Layer 2: `hip_wrapper.py` — sglang 对齐的 Python wrapper（buffer pool，最小 Python ops，实际推理 shape）
+- Layer 3: `hip_dsv4_integration.py` — 引擎 monkey-patch（meta_path finder，调 Layer 2 wrapper）
 
 ## 5. 端到端 8-GPU server 性能 (`bench_server.py`)
 
-tp=8, cuda graph ON, slimquant_marlin W8A8, `--moe-a2a-backend none` (DeepEP/hcoll 缺失), cuda_graph_max_bs=256。同 config A/B 对比：
+tp=8, cuda graph ON, slimquant_marlin W8A8, `--moe-a2a-backend none`, cuda_graph_max_bs=256。
 
-| in | out | baseline | HIP-on | 加速 |
+**三层架构（HIP kernel + hip_wrapper + engine patch）**，10-patch 全生效，**不 crash**（新 wrapper 用 buffer pool + 最小 Python ops，graph-safe）：
+
+| in | out | baseline | HIP-on (10-patch) | 加速 |
 |----|----|----|----|----|
-| 128 | 64 | 3924ms | 3464ms | **1.13x** |
-| 512 | 64 | 3925ms | 3459ms | **1.13x** |
-| 4096 | 32 | 2327ms | 2076ms | **1.12x** |
-| 4096 | 8 | 930ms | 851ms | **1.09x** |
+| 128 | 64 | 3924ms | 3520ms | **1.11x** |
+| 512 | 64 | 3925ms | 3524ms | **1.11x** |
+| 4096 | 32 | 2327ms | 2121ms | **1.10x** |
+| 4096 | 8 | 930ms | 868ms | **1.07x** |
 
-**HIP patch 端到端加速 ~12%**，无 crash（buffer-pool 修复后）。
+**HIP patch 端到端加速 ~10%**，无 crash。GEMM 是瓶颈（vendor marlin），elementwise patch 收益边际；加速主要来自 fused_rope/silu/rmsnorm/quant 的低 dispatch。
 
-op-chain (`e2e_op_chain.py`, lightop GEMM + HIP elementwise): MLP step **2.28x**。
+op-chain (`e2e_op_chain.py`): MLP step **2.28x**。
 
 ## 6. 目录结构
 
