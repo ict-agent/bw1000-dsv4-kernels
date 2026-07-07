@@ -84,28 +84,33 @@ def _try_impl():
                 _patched.add("rmsnorm"); print("[HIP-DSV4] patched jit_kernel.rmsnorm_self", flush=True)
         except Exception as e: print(f"[HIP-DSV4] rmsnorm: {e}", flush=True)
 
-    # NSA act_quant
+    # NSA act_quant — C4Indexer uses nsa.triton_kernel.act_quant (not tilelang_kernel)
     if _on("SGLANG_HIP_NSA_QUANT") and "nsa_quant" not in _patched:
         try:
-            from sglang.srt.layers.attention.nsa import tilelang_kernel as tk
+            from sglang.srt.layers.attention.nsa import triton_kernel as tk
             if not getattr(tk, "_hip_aq", False):
                 tk._hip_aq = True
                 _orig = tk.act_quant
                 def hip_aq(x, block_size=128, scale_fmt=None):
                     return W.act_quant(x, block_size, scale_fmt)
                 tk.act_quant = hip_aq
-                _patched.add("nsa_quant"); print("[HIP-DSV4] patched nsa.tilelang_kernel.act_quant", flush=True)
+                _patched.add("nsa_quant"); print("[HIP-DSV4] patched nsa.triton_kernel.act_quant", flush=True)
         except Exception as e: print(f"[HIP-DSV4] nsa_quant: {e}", flush=True)
 
-    # MHC (hc_split_sinkhorn + mhc_post_torch)
+    # MHC: patch mhc.mhc_post (tilelang entry, env SGLANG_OPT_USE_TILELANG_MHC_POST=True by default)
+    # hc_split_sinkhorn/mhc_post_torch are fallbacks, not called when tilelang on.
+    # mhc_pre not patched (sglang mhc_pre contains GEMM; our wrapper is sigmoid-only, not aligned).
     if _on("SGLANG_HIP_MHC") and "mhc" not in _patched:
         try:
             import sglang.srt.layers.mhc as mhc
             if not getattr(mhc, "_hip_mhc", False):
                 mhc._hip_mhc = True
-                mhc.hc_split_sinkhorn = W.hc_split_sinkhorn
-                mhc.mhc_post_torch = W.mhc_post_torch
-                _patched.add("mhc"); print("[HIP-DSV4] patched mhc.hc_split_sinkhorn/mhc_post_torch", flush=True)
+                _orig_post = mhc.mhc_post
+                def hip_mhc_post(x, residual, post_layer_mix, comb_res_mix):
+                    return W.mhc_post_torch(x, residual, post_layer_mix, comb_res_mix)
+                mhc.mhc_post = hip_mhc_post
+                mhc.mhc_post_torch = W.mhc_post_torch   # also patch fallback
+                _patched.add("mhc"); print("[HIP-DSV4] patched mhc.mhc_post/mhc_post_torch", flush=True)
         except Exception as e: print(f"[HIP-DSV4] mhc: {e}", flush=True)
 
     # FUSED_ROPE (jit_kernel.fused_rope)
@@ -157,6 +162,7 @@ class _HipFinder(importlib.abc.MetaPathFinder):
     def find_spec(self, name, path, target=None):
         if name in ("sglang.srt.layers.mhc",
                     "sglang.srt.layers.attention.nsa.tilelang_kernel",
+                    "sglang.srt.layers.attention.nsa.triton_kernel",
                     "sglang.srt.layers.attention.compressed.indexer",
                     "sglang.srt.layers.activation",
                     "sglang.jit_kernel.deepseek_v4",

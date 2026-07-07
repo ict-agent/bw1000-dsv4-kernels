@@ -106,6 +106,34 @@ __device__ __forceinline__ uint8_t f32_to_e4m3(float f){
     }
     return (uint8_t)out;
 }
+
+// FP8 e5m2fnuz encoding (DCU gfx94x native): sign(1)+exp(5,bias=15)+mant(2).
+// fnuz = flush subnormals to zero, no NaN/inf (all codes are numeric).
+// Max representable = 1.75 * 2^(31-15) = 57344. Subnormals flushed to 0.
+__device__ __forceinline__ uint8_t f32_to_e5m2fnuz(float f){
+    uint32_t u; memcpy(&u, &f, 4);
+    uint32_t sign = (u >> 31) & 1;
+    uint32_t abs_u = u & 0x7FFFFFFFu;
+    if (abs_u == 0) return (uint8_t)(sign << 7);
+    int32_t exp_f = (int32_t)(abs_u >> 23) - 127;
+    uint32_t mant_f = abs_u & 0x7FFFFFu;
+    // e5m2 normal range: exp_f in [-14, 15] (biased 1..31). Subnormal (exp_f < -14) -> 0.
+    if (exp_f < -14) return (uint8_t)(sign << 7);   // flush to zero (fnuz)
+    if (exp_f > 15) {
+        // overflow -> max (sign|11111|11 = 0x7F/0xFF)
+        return (uint8_t)((sign << 7) | 0x7F);
+    }
+    // normal: keep top 2 mantissa bits with round-to-nearest-even
+    uint32_t m2 = mant_f >> 21;            // top 2 bits (bits 22:21)
+    uint32_t round_bit = (mant_f >> 20) & 1;
+    uint32_t sticky = (mant_f & ((1u << 20) - 1)) ? 1u : 0u;
+    uint32_t roundup = round_bit & (sticky | (m2 & 1));
+    m2 += roundup;
+    uint32_t e5 = (uint32_t)(exp_f + 15);
+    if (m2 == 8) { m2 = 0; e5 += 1; }       // mantissa carried
+    if (e5 > 31) return (uint8_t)((sign << 7) | 0x7F);  // clamp to max
+    return (uint8_t)((sign << 7) | (e5 << 2) | m2);
+}
 __device__ __forceinline__ float e4m3_to_f32(uint8_t b){
     uint32_t sign = (b >> 7) & 1;
     uint32_t e    = (b >> 3) & 0xF;

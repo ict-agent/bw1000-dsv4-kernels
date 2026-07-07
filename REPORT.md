@@ -71,20 +71,29 @@ monkey-patch 进 sglang/lmslim/lightop/jit_kernel，`sys.meta_path` import hook 
 
 ## 5. 端到端 8-GPU server 性能 (`bench_server.py`)
 
-tp=8, cuda graph ON, slimquant_marlin W8A8, `--moe-a2a-backend none`, cuda_graph_max_bs=256。
+tp=8, cuda graph ON, slimquant_marlin W8A8, `--moe-a2a-backend none`, cuda_graph_max_bs=256, mem_fraction_static=0.76。
 
-**三层架构（HIP kernel + hip_wrapper + engine patch）**，10-patch 全生效，**不 crash**（新 wrapper 用 buffer pool + 最小 Python ops，graph-safe）：
+**agent 调研引擎实际调用路径**后修正 patch 目标：
+- 命中：ptq(lmslim)、silu(共享专家 SiluAndMul)、fused_rope(jit_kernel)、topk(indexer)、swa(jit_kernel)
+- 修正命中：act_quant(triton_kernel 非 tilelang)、mhc_post(mhc.mhc_post tilelang 入口)
+- env 修正：SGLANG_OPT_USE_JIT_NORM=1 让 rmsnorm_self 被调用
+- 不命中（本模型不走）：per_token_group_quant_int8、merge_attn_states(sglang 不调 vllm merge)
+- 不该 patch（vendor 更快）：rmsnorm(jit_kernel)、act_quant(lightop vendor)、mhc_post(tilelang)——patch 后端到端持平或略慢，说明 vendor 已优化
 
-| in | out | baseline | HIP-on (10-patch) | 加速 |
+**同 config A/B（mem_frac=0.76, max_bs=256）**：
+
+| in | out | baseline | HIP-on (winners: ptq/silu/topk/rope/swa) | 加速 |
 |----|----|----|----|----|
-| 128 | 64 | 3924ms | 3520ms | **1.11x** |
-| 512 | 64 | 3925ms | 3524ms | **1.11x** |
-| 4096 | 32 | 2327ms | 2121ms | **1.10x** |
-| 4096 | 8 | 930ms | 868ms | **1.07x** |
+| 128 | 64 | 3924ms | 3986ms | ~1.0x |
+| 512 | 64 | 3925ms | 3990ms | ~1.0x |
+| 4096 | 32 | 2327ms | 2375ms | ~1.0x |
+| 4096 | 8 | 930ms | 945ms | ~1.0x |
 
-**HIP patch 端到端加速 ~10%**，无 crash。GEMM 是瓶颈（vendor marlin），elementwise patch 收益边际；加速主要来自 fused_rope/silu/rmsnorm/quant 的低 dispatch。
+**诚实结论**：端到端推理被 GEMM(vendor marlin) + attention(compressed C++) + MoE dispatch 主导，elementwise patch（ptq/silu/rope）在端到端占比 <5%，加速在测量噪声内。**单 kernel wrapper 层确实超 SOTA**（fused_rope 12x、silu 5x、ptq 3x），但端到端收益不可见。
 
-op-chain (`e2e_op_chain.py`): MLP step **2.28x**。
+op-chain (`e2e_op_chain.py`, 单 MLP step): **2.28x**（隔离测试，elementwise 占比高时可见收益）。
+
+> 注：vendor SOTA（lightop/jit_kernel/tilelang）在 gfx936 上已充分优化，HIP 手写 elementwise 难在端到端超越。真正端到端加速需优化 GEMM/attention（vendor 已极致）。
 
 ## 6. 目录结构
 
