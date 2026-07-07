@@ -90,8 +90,8 @@ def _try_patches_impl():
                 _orig = m.per_token_quant_int8
                 def hip_ptq(x, scale_dtype=None, cal_sum=False):
                     M, N = x.shape
-                    q = torch.empty(M, N, device=x.device, dtype=torch.int8)
-                    s = torch.empty(M, device=x.device, dtype=torch.float32)
+                    q = _buf((M, N), torch.int8, x.device)
+                    s = _buf((M, 1), torch.float32, x.device)   # [M,1] to match lmslim broadcast
                     L.launch_ptq(_ptr(x), _ptr(q), _ptr(s), M, N, _s())
                     return q, s
                 m.per_token_quant_int8 = hip_ptq
@@ -110,8 +110,8 @@ def _try_patches_impl():
                 def hip_ptgq(x, group_size=128, scale_dtype=None):
                     M, N = x.shape
                     ng = N // group_size
-                    q = torch.empty(M, N, device=x.device, dtype=torch.int8)
-                    s = torch.empty(M, ng, device=x.device, dtype=torch.float32)
+                    q = _buf((M, N), torch.int8, x.device)
+                    s = _buf((M, ng), torch.float32, x.device)
                     L.launch_ptgq(_ptr(x), _ptr(q), _ptr(s), M, N, group_size, _s())
                     return q, s
                 m.per_token_group_quant_int8 = hip_ptgq
@@ -129,11 +129,22 @@ def _try_patches_impl():
                 _orig = SiluAndMul.forward_cuda
                 def hip_silu(self, x):
                     d = x.shape[-1] // 2
-                    gate = x[..., :d].contiguous()
-                    up = x[..., d:].contiguous()
-                    out = torch.empty_like(gate)
-                    M = gate.numel() // gate.shape[-1]
-                    L.launch_silu_mul(_ptr(gate), _ptr(up), _ptr(out), M, gate.shape[-1], _s())
+                    out_shape = x.shape[:-1] + (d,)
+                    out = _buf(tuple(out_shape), x.dtype, x.device)
+                    M = 1
+                    for dim in out_shape[:-1]:
+                        M *= dim
+                    # x is [M, 2N] contiguous (from F.linear / view); gate=x[:,:d], up=x[:,d:]
+                    # pass raw x pointer; kernel reads gate=x[...,:d] and up=x[...,d:] with stride 2N
+                    # but our kernel expects separate gate/up pointers -> use views (contiguous slices are views)
+                    gate = x[..., :d]
+                    up = x[..., d:]
+                    # ensure contiguous for the C kernel (slices of contiguous 2D along last dim are non-contiguous
+                    # only if there's a trailing dim; for 2D [M,2N] slice [M,N] is non-contiguous -> need contiguous copy)
+                    if not gate.is_contiguous():
+                        gate = _buf(gate.shape, gate.dtype, gate.device); gate.copy_(x[..., :d])
+                        up = _buf(up.shape, up.dtype, up.device); up.copy_(x[..., d:])
+                    L.launch_silu_mul(_ptr(gate), _ptr(up), _ptr(out), M, d, _s())
                     return out
                 SiluAndMul.forward_cuda = hip_silu
                 _patched.add("silu")
@@ -190,9 +201,23 @@ def _try_patches_impl():
             if not getattr(tk, "_hip_patched", False):
                 tk._hip_patched = True
                 _orig = tk.act_quant
-                def hip_act_quant(x, y, s, block_size, eps=1e-5, use_ue8m0=False):
-                    M, N = x.shape
-                    L.launch_act_quant_fp8(_ptr(x), _ptr(y), _ptr(s), M, N, block_size, _s())
+                def hip_act_quant(x, block_size=128, scale_fmt=None, eps=1e-5, use_ue8m0=False):
+                    # original signature: act_quant(x, block_size, scale_fmt) -> (y, s)
+                    # y: fp8_e4m3fn same shape as x; s: [*, N//block_size] fp32
+                    N = x.shape[-1]
+                    ng = N // block_size
+                    y = _buf(x.shape, torch.float8_e4m3fn, x.device)
+                    s_shape = x.shape[:-1] + (ng,)
+                    s = _buf(s_shape, torch.float32, x.device)
+                    # flatten to 2D for the C kernel (M, N)
+                    M = 1
+                    for d in x.shape[:-1]:
+                        M *= d
+                    x2 = x.reshape(M, N) if x.dim() != 2 else x
+                    y2 = y.reshape(M, N) if y.dim() != 2 else y
+                    s2 = s.reshape(M, ng) if s.dim() != 2 else s
+                    L.launch_act_quant_fp8(_ptr(x2), _ptr(y2.view(torch.uint8) if hasattr(y2,'view') else y2), _ptr(s2), M, N, block_size, _s())
+                    return y, s
                 tk.act_quant = hip_act_quant
                 _patched.add("nsa_quant")
                 print("[HIP-DSV4] patched nsa.tilelang_kernel.act_quant", flush=True)
@@ -229,9 +254,11 @@ def _try_patches_impl():
                 _orig_post = mhc.mhc_post_torch
                 def hip_mhc_post(x, residual, post_layer_mix, comb_res_mix):
                     if x.shape[0] == 0:
-                        return torch.empty((0, residual.shape[1], residual.shape[2]), dtype=x.dtype, device=x.device)
+                        return _buf((0, residual.shape[1], residual.shape[2]), x.dtype, x.device)
+                    # post_layer_mix may be [n, hc, 1] -> squeeze to [n, hc]
+                    if post_layer_mix.dim() == 3 and post_layer_mix.shape[-1] == 1:
+                        post_layer_mix = post_layer_mix.squeeze(-1)
                     n = comb_res_mix.shape[0]; hc = comb_res_mix.shape[1] if comb_res_mix.dim()==3 else comb_res_mix.shape[-1]
-                    # comb_res_mix:[n,hc,hc] fp32, residual:[n,hc,h] bf16, post_layer_mix:[n,hc] fp32, x:[n,h] bf16
                     hidden = x.shape[-1]
                     out = _buf((n, residual.shape[1], hidden), x.dtype, x.device)
                     L.launch_mhc_post(_ptr(comb_res_mix), _ptr(residual), _ptr(post_layer_mix),
@@ -243,26 +270,30 @@ def _try_patches_impl():
         except Exception as e:
             print(f"[HIP-DSV4] mhc patch: {e}", flush=True)
 
-    # ---- fused_rope ----
+    # ---- fused_rope (sglang jit_kernel.deepseek_v4.fused_rope) ----
     if _on("SGLANG_HIP_ROPE") and "rope" not in _patched:
         try:
-            import sglang.srt.layers.deepseek_v4_rope as rope_mod
+            import sglang.jit_kernel.deepseek_v4 as rope_mod
             if not getattr(rope_mod, "_hip_patched", False):
                 rope_mod._hip_patched = True
-                _orig = rope_mod.apply_rotary_emb
-                def hip_rope(q, k, freqs_cis, positions, *a, **kw):
-                    # q: [nt, nq, rd], k: [nt, nk, rd] or None, freqs_cis: [max_pos, rd] interleaved, positions: [nt]
+                _orig = rope_mod.fused_rope
+                def hip_rope(q, k, freqs_cis, positions, inverse=False):
+                    # q: [nt, nq, rd] bf16, k: [nt, nk, rd] or None, freqs_cis: complex [max_pos, rd/2]
+                    # (complex64 memory = real,imag interleaved = our interleaved layout)
                     nt = q.shape[0]; nq = q.shape[1]
                     nk = k.shape[1] if k is not None else 0
                     rd = q.shape[-1]
                     has_k = 1 if k is not None else 0
+                    # freqs_cis complex64 -> view as float32 interleaved [max_pos, rd]
+                    fc_flat = freqs_cis.view(torch.float32) if freqs_cis.dtype == torch.complex64 else freqs_cis
+                    fc_flat = fc_flat.reshape(freqs_cis.shape[0], rd) if fc_flat.dim() != 2 else fc_flat
                     L.launch_fused_rope(_ptr(q), _ptr(k) if k is not None else 0,
-                                        _ptr(freqs_cis), _ptr(positions),
+                                        _ptr(fc_flat), _ptr(positions),
                                         nt, nq, nk, rd, has_k, _s())
-                    return q, k
-                rope_mod.apply_rotary_emb = hip_rope
+                    return None  # in-place modifies q (and k)
+                rope_mod.fused_rope = hip_rope
                 _patched.add("rope")
-                print("[HIP-DSV4] patched deepseek_v4_rope.apply_rotary_emb", flush=True)
+                print("[HIP-DSV4] patched jit_kernel.deepseek_v4.fused_rope", flush=True)
         except Exception as e:
             print(f"[HIP-DSV4] rope patch: {e}", flush=True)
 
@@ -303,10 +334,11 @@ def _try_patches_impl():
                     def hip_swa(seq_lens_k, seq_lens_q, swa_indices, cu_seqlens_q=None):
                         b = seq_lens_q.shape[0]
                         window = swa_indices.shape[1]
+                        nq = swa_indices.shape[0]   # from output shape, no .item() sync
                         if cu_seqlens_q is None:
-                            cu_seqlens_q = torch.cumsum(seq_lens_q, dim=0, dtype=torch.int32)
-                            cu_seqlens_q = torch.nn.functional.pad(cu_seqlens_q, (1, 0), value=0)
-                        nq = int(seq_lens_q.sum().item())
+                            cu = _buf((b + 1,), torch.int32, seq_lens_q.device)
+                            cu.zero_(); cu[1:] = seq_lens_q.cumsum(0)
+                            cu_seqlens_q = cu
                         L.launch_swa_prefill_indices(_ptr(swa_indices), _ptr(seq_lens_k), _ptr(seq_lens_q),
                                                      _ptr(cu_seqlens_q), nq, b, window, _s())
                         return swa_indices
