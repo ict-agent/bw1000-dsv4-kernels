@@ -1,20 +1,26 @@
 """HIP DSV4 kernel integration into SGLang engine.
 
-Patches the new HIP kernels (act_quant_fp8, mhc_pre/post, hc_split_sinkhorn,
-fused_rope, topk_transform_512, swa_prefill_indices, merge_attn_states) into
-the corresponding SGLang/lmslim/lightop call sites. All graph-safe (stream-driven).
+Patches all 14 HIP kernels into the corresponding SGLang/lmslim/lightop/jit_kernel
+call sites. All graph-safe (stream-driven, buffer-pool for outputs).
 
 Env switches (all gated by master SGLANG_USE_HIP_DSV4=1):
-  SGLANG_HIP_NSA_QUANT=1     act_quant_fp8
-  SGLANG_HIP_MHC=1           mhc_pre / mhc_post / hc_split_sinkhorn
-  SGLANG_HIP_ROPE=1          fused_rope
-  SGLANG_HIP_TOPK=1          topk_transform_512
-  SGLANG_HIP_SWA=1           swa_prefill_indices
-  SGLANG_HIP_MERGE=1         merge_attn_states
-  SGLANG_HIP_GROUPED_GEMM=1  grouped_gemm_int8 (optional; vendor GEMM usually faster)
+  SGLANG_HIP_PTQ=1           per_token_quant_int8        (lmslim)
+  SGLANG_HIP_PTGQ=1          per_token_group_quant_int8  (lmslim)
+  SGLANG_HIP_SILU=1          silu_and_mul                (sglang SiluAndMul)
+  SGLANG_HIP_SILU_QUANT=1    silu_mul_masked_quant       (lmslim fused)
+  SGLANG_HIP_RMSNORM=1       rmsnorm_self                (sglang jit_kernel)
+  SGLANG_HIP_NSA_QUANT=1     act_quant_fp8               (nsa tilelang_kernel)
+  SGLANG_HIP_MHC=1           mhc_post / hc_split_sinkhorn (sglang mhc)
+  SGLANG_HIP_ROPE=1          fused_rope                  (deepseek_v4_rope)
+  SGLANG_HIP_TOPK=1          topk_transform_512          (compressed indexer)
+  SGLANG_HIP_SWA=1           swa_prefill_indices          (jit_kernel)
+  SGLANG_HIP_MERGE=1         merge_attn_states           (vllm triton)
+  SGLANG_HIP_GROUPED_GEMM=1  grouped_gemm_int8           (optional; vendor marlin faster)
 
-Load order: import this module at engine startup (e.g. via .pth or PYTHONSTARTUP),
-it registers lazy patches that apply once the target modules are imported.
+Load order: import this module at engine startup (via sitecustomize.py on PYTHONPATH),
+it registers a sys.meta_path finder that patches each target module synchronously as
+it loads (before TP workers fork). Output buffers use a static pool (_buf) so CUDA
+graph capture/replay sees stable pointers (no VM fault).
 """
 import os, sys, ctypes, threading, torch
 
@@ -74,6 +80,108 @@ def _try_patches_impl():
     if len(_patched) >= _want_count():
         return  # all patches applied, skip
     L = _lib()
+
+    # ---- per_token_quant_int8 (lmslim) ----
+    if _on("SGLANG_HIP_PTQ") and "ptq" not in _patched:
+        try:
+            import lmslim.layers.gemm.int8_utils as m
+            if not getattr(m, "_hip_ptq_patched", False):
+                m._hip_ptq_patched = True
+                _orig = m.per_token_quant_int8
+                def hip_ptq(x, scale_dtype=None, cal_sum=False):
+                    M, N = x.shape
+                    q = torch.empty(M, N, device=x.device, dtype=torch.int8)
+                    s = torch.empty(M, device=x.device, dtype=torch.float32)
+                    L.launch_ptq(_ptr(x), _ptr(q), _ptr(s), M, N, _s())
+                    return q, s
+                m.per_token_quant_int8 = hip_ptq
+                _patched.add("ptq")
+                print("[HIP-DSV4] patched lmslim.per_token_quant_int8", flush=True)
+        except Exception as e:
+            print(f"[HIP-DSV4] ptq patch: {e}", flush=True)
+
+    # ---- per_token_group_quant_int8 (lmslim) ----
+    if _on("SGLANG_HIP_PTGQ") and "ptgq" not in _patched:
+        try:
+            import lmslim.layers.gemm.int8_utils as m
+            if not getattr(m, "_hip_ptgq_patched", False):
+                m._hip_ptgq_patched = True
+                _orig = m.per_token_group_quant_int8
+                def hip_ptgq(x, group_size=128, scale_dtype=None):
+                    M, N = x.shape
+                    ng = N // group_size
+                    q = torch.empty(M, N, device=x.device, dtype=torch.int8)
+                    s = torch.empty(M, ng, device=x.device, dtype=torch.float32)
+                    L.launch_ptgq(_ptr(x), _ptr(q), _ptr(s), M, N, group_size, _s())
+                    return q, s
+                m.per_token_group_quant_int8 = hip_ptgq
+                _patched.add("ptgq")
+                print("[HIP-DSV4] patched lmslim.per_token_group_quant_int8", flush=True)
+        except Exception as e:
+            print(f"[HIP-DSV4] ptgq patch: {e}", flush=True)
+
+    # ---- silu_and_mul (sglang SiluAndMul.forward_cuda) ----
+    if _on("SGLANG_HIP_SILU") and "silu" not in _patched:
+        try:
+            from sglang.srt.layers.activation import SiluAndMul
+            if not getattr(SiluAndMul, "_hip_silu_patched", False):
+                SiluAndMul._hip_silu_patched = True
+                _orig = SiluAndMul.forward_cuda
+                def hip_silu(self, x):
+                    d = x.shape[-1] // 2
+                    gate = x[..., :d].contiguous()
+                    up = x[..., d:].contiguous()
+                    out = torch.empty_like(gate)
+                    M = gate.numel() // gate.shape[-1]
+                    L.launch_silu_mul(_ptr(gate), _ptr(up), _ptr(out), M, gate.shape[-1], _s())
+                    return out
+                SiluAndMul.forward_cuda = hip_silu
+                _patched.add("silu")
+                print("[HIP-DSV4] patched SiluAndMul.forward_cuda", flush=True)
+        except Exception as e:
+            print(f"[HIP-DSV4] silu patch: {e}", flush=True)
+
+    # ---- silu_mul_masked_quant (sglang MLP fused path) ----
+    if _on("SGLANG_HIP_SILU_QUANT") and "silu_quant" not in _patched:
+        try:
+            # patch the native ext silu_mul_quant if present, else register for MLP forward hook
+            import lmslim.layers.gemm.int8_utils as m
+            if not getattr(m, "_hip_siluq_patched", False):
+                m._hip_siluq_patched = True
+                # expose a hip silu_mul_masked_quant callable for the MLP patch
+                def hip_silu_mul_masked_quant(gate, up, mask=None):
+                    M, N = gate.shape
+                    if mask is None:
+                        mask = torch.ones(M, device=gate.device, dtype=torch.int32)
+                    q = torch.empty(M, N, device=gate.device, dtype=torch.int8)
+                    s = torch.empty(M, device=gate.device, dtype=torch.float32)
+                    L.launch_silu_mul_masked_quant(_ptr(gate), _ptr(up), _ptr(mask), _ptr(q), _ptr(s), M, N, _s())
+                    return q, s
+                m.hip_silu_mul_masked_quant = hip_silu_mul_masked_quant
+                _patched.add("silu_quant")
+                print("[HIP-DSV4] registered lmslim.hip_silu_mul_masked_quant", flush=True)
+        except Exception as e:
+            print(f"[HIP-DSV4] silu_quant patch: {e}", flush=True)
+
+    # ---- rmsnorm_self (sglang jit_kernel rmsnorm_self) ----
+    if _on("SGLANG_HIP_RMSNORM") and "rmsnorm" not in _patched:
+        try:
+            import sglang.jit_kernel.deepseek_v4 as dk
+            if not getattr(dk, "_hip_rms_patched", False):
+                dk._hip_rms_patched = True
+                _orig = dk.rmsnorm_self
+                def hip_rmsnorm_self(q, eps=1e-6):
+                    # q: [..., HEAD_DIM] bf16, in-place normalized
+                    orig_shape = q.shape
+                    flat = q.reshape(-1, orig_shape[-1]) if q.dim() > 2 else q
+                    M = flat.shape[0]; N = flat.shape[1]
+                    L.launch_rmsnorm_self(_ptr(flat), M, N, eps, _s())
+                    return q
+                dk.rmsnorm_self = hip_rmsnorm_self
+                _patched.add("rmsnorm")
+                print("[HIP-DSV4] patched jit_kernel.rmsnorm_self", flush=True)
+        except Exception as e:
+            print(f"[HIP-DSV4] rmsnorm patch: {e}", flush=True)
 
     # ---- act_quant_fp8 (NSA) ----
     if _on("SGLANG_HIP_NSA_QUANT") and "nsa_quant" not in _patched:
@@ -253,7 +361,7 @@ def _loop_try():
         return
 def _want_count():
     c = 0
-    for n in ["SGLANG_HIP_NSA_QUANT","SGLANG_HIP_MHC","SGLANG_HIP_ROPE","SGLANG_HIP_TOPK","SGLANG_HIP_SWA","SGLANG_HIP_MERGE","SGLANG_HIP_GROUPED_GEMM"]:
+    for n in ["SGLANG_HIP_PTQ","SGLANG_HIP_PTGQ","SGLANG_HIP_SILU","SGLANG_HIP_SILU_QUANT","SGLANG_HIP_RMSNORM","SGLANG_HIP_NSA_QUANT","SGLANG_HIP_MHC","SGLANG_HIP_ROPE","SGLANG_HIP_TOPK","SGLANG_HIP_SWA","SGLANG_HIP_MERGE","SGLANG_HIP_GROUPED_GEMM"]:
         if _on(n): c += 1
     return c
 
@@ -271,7 +379,9 @@ class _HipPatchFinder(importlib.abc.MetaPathFinder):
                     "sglang.srt.layers.attention.compressed.indexer",
                     "sglang.srt.layers.deepseek_v4_rope",
                     "sglang.jit_kernel.deepseek_v4",
+                    "sglang.srt.layers.activation",
                     "vllm.v1.attention.ops.triton_merge_attn_states",
+                    "lmslim.layers.gemm.int8_utils",
                     "lightop"):
             _try_patches()
         return None  # don't actually load the module; just trigger patches

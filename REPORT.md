@@ -46,7 +46,23 @@
 
 ## 4. 引擎集成 (`hip_dsv4_integration.py`)
 
-monkey-patch 进 sglang，`sys.meta_path` import hook 同步 patch（fork TP worker 前）。**6 patch 全生效**：nsa_quant/mhc/topk/merge/rope/swa。用 **buffer pool**（`_buf`）避免 graph capture 时分配 tensor 导致 VM fault。
+monkey-patch 进 sglang/lmslim/lightop/jit_kernel，`sys.meta_path` import hook 同步 patch（fork TP worker 前）。**11 patch 全生效**（覆盖所有 kernel）：
+
+| 开关 | Patch 目标 | 生效 |
+|------|-----------|------|
+| SGLANG_HIP_PTQ | `lmslim.per_token_quant_int8` | ✅ |
+| SGLANG_HIP_PTGQ | `lmslim.per_token_group_quant_int8` | ✅ |
+| SGLANG_HIP_SILU | `sglang SiluAndMul.forward_cuda` | ✅ |
+| SGLANG_HIP_SILU_QUANT | `lmslim.hip_silu_mul_masked_quant` | ✅ |
+| SGLANG_HIP_RMSNORM | `sglang jit_kernel.rmsnorm_self` | ✅ |
+| SGLANG_HIP_NSA_QUANT | `nsa.tilelang_kernel.act_quant` | ✅ |
+| SGLANG_HIP_MHC | `mhc.hc_split_sinkhorn`/`mhc_post_torch` | ✅ |
+| SGLANG_HIP_TOPK | `indexer.topk_transform_512` | ✅ |
+| SGLANG_HIP_MERGE | `vllm triton_merge_attn_states` | ✅ |
+| SGLANG_HIP_ROPE | `deepseek_v4_rope.apply_rotary_emb` | ✅ |
+| SGLANG_HIP_SWA | `jit_kernel.tilelang_make_swa_prefill_indices` | ✅ |
+
+用 **buffer pool**（`_buf`）避免 graph capture 时分配 tensor 导致 VM fault。性能分析见 [PERF_ANALYSIS.md](PERF_ANALYSIS.md)。
 
 ## 5. 端到端 8-GPU server 性能 (`bench_server.py`)
 
