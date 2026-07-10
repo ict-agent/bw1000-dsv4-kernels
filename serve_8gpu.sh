@@ -3,7 +3,7 @@
 # TP=8, cuda graph ON, moe-a2a-backend=none. For HIP patch on/off A/B benchmark.
 # Usage: SGLANG_USE_HIP_DSV4=1 (set to enable HIP patches) bash serve_8gpu.sh
 set -e
-rm -rf ~/.cache/
+# rm -rf ~/.cache/   # disabled: forces lightop/tilelang full recompile each run (~20min, can hang)
 ulimit -l unlimited
 export HIP_KERNEL_BATCH_CEILING=100
 export GPU_MAX_HW_QUEUES=3
