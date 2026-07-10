@@ -27,6 +27,37 @@ def _master(): return os.environ.get("SGLANG_USE_HIP_DSV4", "0") == "1"
 
 _patched = set()
 _in_try = False
+# Call-site namespace patches. Many sglang/lmslim modules bind functions via
+# top-level `from <mod> import <func>`. Patching the DEFINITION module's attribute
+# does NOT change the already-bound name in the importing module. So we must also
+# overwrite the name in each CALL-SITE module's namespace. Call-site modules import
+# late (during sglang model load), so we retry via Timer until they appear.
+_callsite_done = set()
+def _patch_callsite(modname, attr, val):
+    """Idempotently set modname.attr = val once the module is importable. Returns True when done."""
+    key = (modname, attr)
+    if key in _callsite_done: return True
+    import sys, importlib
+    m = sys.modules.get(modname)
+    if m is None:
+        try: m = importlib.import_module(modname)
+        except Exception: return False  # not loaded yet; retry on next tick
+    if getattr(m, attr, None) is not val:
+        setattr(m, attr, val)
+        print(f"[HIP-DSV4] patched call-site {modname}.{attr}", flush=True)
+    _callsite_done.add(key)
+    return True
+
+def _want_callsites():
+    cs = []
+    if _on("SGLANG_HIP_PTQ"):
+        cs += [("lmslim.layers.fused_moe.fuse_moe_w4a8_marlin","per_token_quant_int8"),
+               ("lmslim.quantize.quant_tools","per_token_quant_int8")]
+    if _on("SGLANG_HIP_ROPE"):
+        cs += [("sglang.srt.models.deepseek_v4","fused_rope")]
+    if _on("SGLANG_HIP_SWA"):
+        cs += [("sglang.srt.layers.attention.compressed.paged_prefill","tilelang_make_swa_prefill_indices")]
+    return cs
 
 def _try_patches():
     global _in_try
@@ -38,8 +69,24 @@ def _try_patches():
         _in_try = False
 
 def _try_impl():
-    if len(_patched) >= _want_count(): return
     import hip_wrapper as W
+    # Always attempt call-site patches first (they may need modules that load late).
+    # These are idempotent and no-op until the call-site module is importable, so it's
+    # safe to call every tick. Must run BEFORE the early-return below.
+    if _on("SGLANG_HIP_PTQ"):
+        _patch_callsite("lmslim.layers.fused_moe.fuse_moe_w4a8_marlin", "per_token_quant_int8", W.per_token_quant_int8)
+        _patch_callsite("lmslim.quantize.quant_tools", "per_token_quant_int8", W.per_token_quant_int8)
+        _patch_callsite("sglang.srt.layers.quantization.slimquant_w4a8", "per_token_quant_int8", W.per_token_quant_int8)
+        _patch_callsite("sglang.srt.layers.quantization.w8a8_int8", "per_token_quant_int8", W.per_token_quant_int8)
+        _patch_callsite("sglang.srt.layers.quantization.compressed_tensors.schemes.compressed_tensors_w8a8_int8", "per_token_quant_int8", W.per_token_quant_int8)
+    if _on("SGLANG_HIP_ROPE"):
+        _patch_callsite("sglang.srt.models.deepseek_v4", "fused_rope", W.fused_rope)
+    if _on("SGLANG_HIP_SWA"):
+        _patch_callsite("sglang.srt.layers.attention.compressed.paged_prefill",
+                        "tilelang_make_swa_prefill_indices", W.tilelang_make_swa_prefill_indices)
+
+    if len(_patched) >= _want_count():
+        return  # def-module patches done; call-site retries handled above
 
     # PTQ (lmslim)
     if _on("SGLANG_HIP_PTQ") and "ptq" not in _patched:
@@ -113,16 +160,13 @@ def _try_impl():
                 _patched.add("mhc"); print("[HIP-DSV4] patched mhc.mhc_post/mhc_post_torch", flush=True)
         except Exception as e: print(f"[HIP-DSV4] mhc: {e}", flush=True)
 
-    # FUSED_ROPE (jit_kernel.fused_rope)
+    # FUSED_ROPE (jit_kernel.fused_rope) — W.fused_rope signature matches engine's
     if _on("SGLANG_HIP_ROPE") and "rope" not in _patched:
         try:
             import sglang.jit_kernel.deepseek_v4 as dk
             if not getattr(dk, "_hip_rope", False):
                 dk._hip_rope = True
-                _orig = dk.fused_rope
-                def hip_rope(q, k, freqs_cis, positions, inverse=False):
-                    return W.fused_rope(q, k, freqs_cis, positions, inverse)
-                dk.fused_rope = hip_rope
+                dk.fused_rope = W.fused_rope
                 _patched.add("rope"); print("[HIP-DSV4] patched jit_kernel.fused_rope", flush=True)
         except Exception as e: print(f"[HIP-DSV4] rope: {e}", flush=True)
 
@@ -180,15 +224,24 @@ def _want_count():
         if _on(n): c += 1
     return c
 
+def _all_done():
+    """Done when definition-module patches AND all call-site patches have landed.
+    Call-site modules (fuse_moe_w4a8_marlin, deepseek_v4 model, paged_prefill) load
+    late during sglang model load, so we keep retrying past _patched being full."""
+    if len(_patched) < _want_count(): return False
+    for mod, attr in _want_callsites():
+        if (mod, attr) not in _callsite_done: return False
+    return True
+
 def _start():
     import threading
     if not any(isinstance(f, _HipFinder) for f in sys.meta_path):
         sys.meta_path.insert(0, _HipFinder())
     _try_patches()
-    if _master() and len(_patched) < _want_count():
+    if _master() and not _all_done():
         def attempt():
             _try_patches()
-            if _master() and len(_patched) < _want_count():
+            if _master() and not _all_done():
                 threading.Timer(2.0, attempt).start()
         threading.Timer(0.5, attempt).start()
 

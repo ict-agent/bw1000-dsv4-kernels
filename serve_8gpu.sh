@@ -46,6 +46,6 @@ python3 -m sglang.launch_server \
   --chat-template $sglang_dir/examples/chat_template/tool_chat_template_deepseekv3.jinja \
   --kv-cache-dtype auto \
   --cuda-graph-max-bs 256 \
-  --mem-fraction-static 0.76 \
+  --mem-fraction-static ${MEM_FRACTION:-0.76} \
   --disable-flashinfer-autotune \
   2>&1 | tee -a /workspace/server_${MODE:-run}.log

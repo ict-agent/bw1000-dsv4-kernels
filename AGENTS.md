@@ -51,16 +51,16 @@ kill $(pgrep -f sglang.launch_server | head -1)
 
 | op | 引擎实际调用 | patch 目标 | 命中 | 备注 |
 |---|---|---|---|---|
-| per_token_quant_int8 | lmslim.per_token_quant_int8 | lmslim attr | ✅ | 密集+MoE gemm1 前 |
+| per_token_quant_int8 | lmslim.per_token_quant_int8 | lmslim attr + **call-site fuse_moe_w4a8_marlin** | ✅ | call-site 顶层 import 绑定，必须 patch 调用点 |
 | per_token_group_quant_int8 | 本模型不调用 | — | ❌ | slimquant 走 per-token |
-| silu_and_mul | SiluAndMul.forward_cuda（共享专家） | 类方法 | ⚠️ | 路由专家走 lightop fuse_silu_mul_quant |
+| silu_and_mul | SiluAndMul.forward_cuda（共享专家） | 类方法 | ✅ | dispatch_forward 构建时绑定，无 call-site 问题 |
 | rmsnorm_self | SGLANG_OPT_USE_JIT_NORM=1 时 | jit_kernel attr | 需 env | 默认走 rms_normalize_triton |
-| act_quant | nsa.triton_kernel.act_quant | triton_kernel attr | ✅ | 不是 tilelang_kernel |
+| act_quant | nsa.triton_kernel.act_quant（C4Indexer） | triton_kernel attr + **call-site indexer** | ✅ | NSA indexer DCU 走 lightop，triton patch 不命中 |
 | hc_split_sinkhorn | SGLANG_OPT_USE_TILELANG_MHC_PRE=False 时 | mhc.hc_split_sinkhorn | 需 env | 默认走 mhc_pre tilelang |
 | mhc_post | mhc.mhc_post（tilelang 入口） | mhc attr | ✅ | 不是 mhc_post_torch |
-| fused_rope | jit_kernel.fused_rope | jit_kernel attr | ✅ | in-place |
-| topk_transform_512 | indexer.topk_transform_512_pytorch_vectorized（SGLANG_TOPK_TRANSFORM_512_TORCH=true） | indexer attr | ✅ | |
-| swa | jit_kernel.tilelang_make_swa_prefill_indices | jit_kernel attr | ✅ | prefill only |
+| fused_rope | jit_kernel.fused_rope | jit_kernel attr + **call-site deepseek_v4 model** | ✅ | call-site 顶层 import 绑定 |
+| topk_transform_512 | indexer.topk_transform_512_pytorch_vectorized（SGLANG_TOPK_TRANSFORM_512_TORCH=true） | indexer attr | ✅ | 同模块调用，无 call-site 问题 |
+| swa | jit_kernel.tilelang_make_swa_prefill_indices | jit_kernel attr + **call-site paged_prefill** | ✅ | call-site 顶层 import 绑定 |
 | merge_attn_states | sglang 不调 vllm merge | — | ❌ | 无 patch 点 |
 
 ## 性能真相
@@ -80,3 +80,6 @@ kill $(pgrep -f sglang.launch_server | head -1)
 7. mem_frac 太高 + buffer pool → OOM。降到 0.76
 8. /tmp 满 → docker exec 报 "rg not found"（实际是 pivot dir ENOSPC）。设 CLAUDE_CODE_TMPDIR=~/tmp
 9. core dump 堆积 → 根分区满。定期 rm /workspace/core.*
+10. **server crash 留 zombie VRAM**：sglang TP worker crash 后显存不释放，`rocm-smi` 显示 68% used 但无 python 进程，导致下次启动 load weight OOM（"0 bytes free"）。解法：`for i in 0 1 2 3 4 5 6 7; do rocm-smi --hcureset -d $i; done`（容器内 root 可执行，不需要 sudo）。**每次 server crash 后必做这一步**，否则必然 OOM。
+11. **profiling 不能在 capture 期 sync**：`_timed` 里 `stream.synchronize()` 在 cuda graph capture 内是非法操作，必 crash。必须用 `torch.cuda.is_current_stream_capturing()` 检测并 skip timing（capture 期 kernel 仍正常 launch 进 graph，只是不计时）。decode(bs≤cuda_graph_max_bs)走 graph replay，wrapper 不被调用，profiling 只覆盖 prefill 路径。
+12. **call-site binding 陷阱（最隐蔽）**：sglang/lmslim 模块用顶层 `from <mod> import <func>` 绑定函数。patch 定义模块属性（`mod.func = new`）**不改变**已 import 的调用点模块里那个名字。例：`fuse_moe_w4a8_marlin.py:18` 顶层 `from int8_utils import per_token_quant_int8`——patch `int8_utils.per_token_quant_int8` 后，`fuse_moe_w4a8_marlin` 命名空间里仍是旧函数。**必须额外 patch 调用点模块命名空间**（`fuse_moe_w4a8_marlin.per_token_quant_int8 = new`），见 hip_dsv4_integration.py `_patch_callsite`。受影响：ptq(fuse_moe_w4a8_marlin/quant_tools)、rope(deepseek_v4 model)、swa(paged_prefill)。topk(indexer 同模块调用，无此问题)、silu(类方法 dispatch，无此问题)。**验证 patch 命中**：`dv4.fused_rope is W.fused_rope` 必须为 True（offline 脚本见 REPORT.md）。

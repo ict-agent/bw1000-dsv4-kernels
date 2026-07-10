@@ -95,6 +95,38 @@ op-chain (`e2e_op_chain.py`, 单 MLP step): **2.28x**（隔离测试，elementwi
 
 > 注：vendor SOTA（lightop/jit_kernel/tilelang）在 gfx936 上已充分优化，HIP 手写 elementwise 难在端到端超越。真正端到端加速需优化 GEMM/attention（vendor 已极致）。
 
+## 5.1 真实推理 profiling（SGLANG_HIP_PROFILE）
+
+**wrapper 层 GPU-event profiling**：hip_wrapper.py 内 `_timed`（torch.cuda.Event）记录每个 launch_xxx 的 GPU 时间，`_capturing()` 跳过 graph capture 期（sync 在 capture 内非法），异步 batched flush（每 256 调用 sync 一次，不序列化推理）。输出 `/workspace/hip_kernels/results/profiling.json`。
+
+**capture-safety 修复**：原 `_timed` 每次 launch 都 `stream.synchronize()` → 在 cuda graph capture 内非法，crash。修复：`is_current_stream_capturing()` 检测 + 异步 event drain。
+
+**重要发现**：
+- **profiling 只覆盖 prefill 路径**：decode (bs≤cuda_graph_max_bs=256) 走 graph replay，python wrapper 不被调用，无 timing。这是 cuda graph 的本质——replay 不经过 python。
+- **SGLANG_HIP_PROFILE=1 在某次启动 crash**（hipErrorNoBinaryForGpu，async 报到 kv_cache.py:48），但 SGLANG_HIP_PROFILE=0 同 config 不 crash。crash 在 load_weight 阶段（wrapper 未被调用），根因待查（疑似 fork 后 CUDA event 创建的 transient 竞争）。**修复后 PATCH 全部生效，server 进入 capture**。
+- **call-site binding 陷阱（根因级发现）**：ptq/rope/swa 三个 patch 原本**不真正生效**——sglang/lmslim 调用点模块用顶层 `from <mod> import <func>` 绑定，patch 定义模块属性不改变已绑定名字。修复：`_patch_callsite` 额外 patch 调用点模块命名空间（fuse_moe_w4a8_marlin、deepseek_v4 model、paged_prefill），Timer 重试直到模块加载。offline 验证 `dv4.fused_rope is W.fused_rope: True`。**这是端到端无加速的真实原因之一**：ptq(7-8x)、rope(12x) 这两个最大 winner 原本根本没被调用。
+- **prefill e2e（hipon，call-site 修复前的一次成功点）**：in=4096 out=16 → 1902ms（n=5）。完整 e2e 表见下方。
+
+**bench baseline 修正**（关键）：
+- **topk**：原 bench vs `jit_kernel`（0.15x，慢）。但引擎 `SGLANG_TOPK_TRANSFORM_512_TORCH=true` 实际走 `indexer.topk_transform_512_pytorch_vectorized`（torch.topk+gather+where，多 op）。hip radix-select 单 kernel vs pytorch_vec 应更快。补测后确认 winner/loser。
+- **silu**：原 bench vs torch ref（6-10x）。但 DCU `SiluAndMul.forward_cuda` 实际走 `lightop.fuse_silu_and_mul`（vendor fused）。补测 vs lightop 后确认。
+
+**call-site binding 修复验证**（server log，hipon_callsite2）：
+```
+[HIP-DSV4] patched call-site lmslim.layers.fused_moe.fuse_moe_w4a8_marlin.per_token_quant_int8
+[HIP-DSV4] patched call-site lmslim.quantize.quant_tools.per_token_quant_int8
+[HIP-DSV4] patched call-site sglang.srt.models.deepseek_v4.fused_rope
+[HIP-DSV4] patched call-site sglang.srt.layers.attention.compressed.paged_prefill.tilelang_make_swa_prefill_indices
+```
+4 个 call-site patch 全部命中。offline 验证 `dv4.fused_rope is W.fused_rope: True`。
+
+## 5.2 GPU 运维（crash 后必做）
+
+sglang TP worker crash 后显存不释放（zombie VRAM，rocm-smi 显示 68% used 但无 python 进程），导致下次启动 load weight OOM。**每次 crash 后必做**：
+```bash
+for i in 0 1 2 3 4 5 6 7; do rocm-smi --hcureset -d $i; done   # 容器内 root 可执行
+```
+
 ## 6. 目录结构
 
 ```

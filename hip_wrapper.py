@@ -48,6 +48,77 @@ _LIB.launch_grouped_gemm_int8.argtypes = [P,P,P,P,P,P,ctypes.c_int,ctypes.c_int,
 def _s():
     return torch.cuda.current_stream().cuda_stream
 
+# ---- Optional profiling (SGLANG_HIP_PROFILE=1) ----
+# Records GPU time per launch_xxx in REAL inference. Two safety rules:
+#  (1) skip timing while a CUDA graph is being captured — synchronize() inside
+#      capture is illegal and crashes the server. Capture replays don't go through
+#      python anyway, so there's nothing to time during decode (bs<=cuda_graph_max_bs).
+#  (2) don't synchronize per call (would serialize inference). Instead record events
+#      asynchronously and drain them in batches (every _FLUSH_EVERY calls).
+_PROFILE = os.environ.get("SGLANG_HIP_PROFILE", "0") == "1"
+_PROF_DIR = os.environ.get("SGLANG_HIP_PROF_DIR", "/workspace/hip_kernels/results")
+_timings = {}
+_pending = []  # list of (name, e0, e1) awaiting drain
+_FLUSH_EVERY = 256
+
+def _capturing():
+    try:
+        return torch.cuda.is_current_stream_capturing()
+    except Exception:
+        return False
+
+def _timed(name, fn):
+    if not _PROFILE: return fn
+    def w(*a, **kw):
+        if _capturing():
+            return fn(*a, **kw)  # graph capture: no timing (sync illegal)
+        e0 = torch.cuda.Event(enable_timing=True); e1 = torch.cuda.Event(enable_timing=True)
+        e0.record(); r = fn(*a, **kw); e1.record()
+        _pending.append((name, e0, e1))
+        if len(_pending) >= _FLUSH_EVERY:
+            _drain()
+        return r
+    return w
+
+def _drain():
+    if not _pending: return
+    try:
+        torch.cuda.current_stream().synchronize()
+    except Exception:
+        return
+    for name, e0, e1 in _pending:
+        try:
+            _timings.setdefault(name, []).append(round(e0.elapsed_time(e1), 4))
+        except Exception:
+            pass
+    _pending.clear()
+    _dump()
+
+def dump_timings():
+    if not _PROFILE: return
+    _drain()  # flush pending events first
+    _dump()
+
+def _dump():
+    if not _PROFILE: return
+    import json, statistics, os
+    out = {k: {"calls": len(v),
+               "median_ms": round(statistics.median(v),4) if v else 0,
+               "min_ms": round(min(v),4) if v else 0,
+               "max_ms": round(max(v),4) if v else 0,
+               "total_ms": round(sum(v),4)}
+           for k,v in _timings.items()}
+    try:
+        os.makedirs(_PROF_DIR, exist_ok=True)
+        with open(os.path.join(_PROF_DIR, "profiling.json"),"w") as f:
+            json.dump(out, f, indent=2)
+    except Exception as e:
+        print(f"[PROF] dump failed: {e}", flush=True)
+    for k,v in out.items():
+        print(f"[PROF] {k}: calls={v['calls']} median={v['median_ms']}ms total={v['total_ms']}ms", flush=True)
+
+import atexit; atexit.register(dump_timings)
+
 # Static buffer pool: graph-capture-safe (stable pointer across replays).
 # key includes a name tag so different outputs of the same shape don't alias.
 _pool = {}
@@ -225,3 +296,10 @@ def grouped_gemm_int8(A, B, sa, sb, masked_m, E, M, N, K):
     _LIB.launch_grouped_gemm_int8(A.data_ptr(), B.data_ptr(), sa.data_ptr(), sb.data_ptr(),
                                   C.data_ptr(), masked_m.data_ptr(), E, M, N, K, _s())
     return C
+
+# If profiling enabled, wrap each launch_xxx to record GPU time per kernel
+if _PROFILE:
+    for _name in dir(_LIB):
+        if _name.startswith("launch_"):
+            _orig = getattr(_LIB, _name)
+            setattr(_LIB, _name, _timed(_name, _orig))

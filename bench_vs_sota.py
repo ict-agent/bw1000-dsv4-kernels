@@ -101,10 +101,21 @@ for nt in [1,64,256]:
     # triton rope: signature (x, freqs_cis, positions=None, inverse=False) -> Tensor; no k param
     rec("fused_rope_triton",nt,bench(lambda:sota_rope_triton(q.clone(),fc[pos],pos)),bench(lambda:lib.launch_fused_rope(q.data_ptr(),0,fc_flat.data_ptr(),pos.data_ptr(),nt,nq,0,C.QK_ROPE_HEAD_DIM,0,S)),"sglang/triton")
 
-# 5. silu_and_mul (torch ref = SOTA; no vendor fused)
+# 5. silu_and_mul — ENGINE baseline is lightop.fuse_silu_and_mul (DCU), NOT torch ref.
+#    Wrapper uses split-layout kernel reading interleaved gate_up directly.
+try:
+    from lightop import fuse_silu_and_mul as _lightop_silu
+except Exception: _lightop_silu=None
 for M in [1,64,256]:
-    N=C.MOE_INTERMEDIATE_SIZE;g=torch.randn(M,N,device=DEV,dtype=bf);u=torch.randn(M,N,device=DEV,dtype=bf);o=torch.empty_like(g)
-    rec("silu_and_mul",M,bench(lambda:(torch.sigmoid(g.float())*g*u).to(bf)),bench(lambda:lib.launch_silu_mul(g.data_ptr(),u.data_ptr(),o.data_ptr(),M,N,S)),"torch/ref")
+    N=C.MOE_INTERMEDIATE_SIZE
+    gu=torch.randn(M,2*N,device=DEV,dtype=bf)   # interleaved gate_up (engine input)
+    o=torch.empty(M,N,device=DEV,dtype=bf)
+    rec("silu_and_mul",M,bench(lambda:(torch.sigmoid(gu[:,:N].float())*gu[:,:N]*gu[:,N:]).to(bf)),
+        bench(lambda:lib.launch_silu_mul_split(gu.data_ptr(),o.data_ptr(),M,N,S)),"torch/ref")
+    if _lightop_silu:
+        o2=torch.empty(M,N,device=DEV,dtype=bf)
+        rec("silu_and_mul",M,bench(lambda:_lightop_silu(gu,o2)),
+            bench(lambda:lib.launch_silu_mul_split(gu.data_ptr(),o.data_ptr(),M,N,S)),"lightop/DCU(ENGINE)")
 
 # 6. topk_transform_512 (sglang jit_kernel = SOTA)
 for b,slens in [(8,[100,200,512,800,1000,650,700,512])]:
@@ -112,6 +123,17 @@ for b,slens in [(8,[100,200,512,800,1000,650,700,512])]:
     sl=torch.tensor(slens,device=DEV,dtype=torch.int32);sc=torch.randn(b,cap,device=DEV,dtype=torch.float32);pt=torch.arange(b*ptr,device=DEV,dtype=torch.int32).reshape(b,ptr)
     out=torch.full((b,k),-1,device=DEV,dtype=torch.int32)
     if SOTA_TOPK_JIT: rec("topk_transform_512",b,bench(lambda:SOTA_TOPK_JIT(sc,sl,pt,out,1,None)),bench(lambda:lib.launch_topk_transform(sc.data_ptr(),sl.data_ptr(),pt.data_ptr(),out.data_ptr(),b,cap,ptr,1,k,S)),"sglang/jit_kernel")
+    # ENGINE ACTUAL BASELINE: SGLANG_TOPK_TRANSFORM_512_TORCH=true forces the
+    # pytorch-vectorized path (torch.topk + gather/where), NOT jit_kernel.
+    # Our hip radix-select must beat THIS, not jit_kernel.
+    try:
+        from sglang.srt.layers.attention.compressed import indexer as _ix
+        _pyv = _ix.topk_transform_512_pytorch_vectorized
+        def _pyv_fn():
+            o=torch.full((b,k),-1,device=DEV,dtype=torch.int32)
+            _pyv(sc,sl,pt,o,1,None); return o
+        rec("topk_transform_512",b,bench(_pyv_fn),bench(lambda:lib.launch_topk_transform(sc.data_ptr(),sl.data_ptr(),pt.data_ptr(),out.data_ptr(),b,cap,ptr,1,k,S)),"sglang/pytorch_vec(ENGINE)")
+    except Exception as e: print("  topk pyv skip:",str(e)[:80])
 
 # 7. linear_bf16_fp32 (sglang jit_kernel = SOTA)  - not in our kernel set, skip
 # 8. mhc_post / hc_split_sinkhorn (TileLang = SOTA)
