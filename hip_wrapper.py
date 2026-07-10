@@ -33,6 +33,8 @@ _LIB.launch_ptq.argtypes = [P,P,P,ctypes.c_int,ctypes.c_int,P]
 _LIB.launch_ptgq.argtypes = [P,P,P,ctypes.c_int,ctypes.c_int,ctypes.c_int,P]
 _LIB.launch_rmsnorm_self.argtypes = [P,P,ctypes.c_int,ctypes.c_int,ctypes.c_float,P]
 _LIB.launch_fused_rope.argtypes = [P,P,P,P,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,P]
+_LIB.launch_fused_rope_strided.argtypes = [P,P,P,P,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,
+                                           ctypes.c_int64,ctypes.c_int64,ctypes.c_int64,ctypes.c_int64,P]
 _LIB.launch_silu_mul.argtypes = [P,P,P,ctypes.c_int,ctypes.c_int,P]
 _LIB.launch_silu_mul_split.argtypes = [P,P,ctypes.c_int,ctypes.c_int,P]
 _LIB.launch_silu_mul_masked_quant.argtypes = [P,P,P,P,P,ctypes.c_int,ctypes.c_int,P]
@@ -174,20 +176,35 @@ def rmsnorm_self(q, eps=1e-6):
     return out
 
 # 5. fused_rope  (aligned with jit_kernel: in-place q/k, freqs_cis complex)
+#    NOTE: engine passes q = q[..., -rope_dim:] which is NON-CONTIGUOUS: q is a slice
+#    of a larger [nt, nheads, head_dim] tensor, so its stride[1] = head_dim, not rope_dim.
+#    Our kernel assumed contiguous and read garbage -> corrupted q -> downstream hang.
+#    FIX: the rope op must be in-place on the ORIGINAL q slice memory (engine keeps the
+#    full tensor). So we cannot .contiguous() (that would write a detached copy). Instead
+#    we pass q's strides to the kernel so it indexes correctly. For k, engine passes
+#    .unsqueeze(1) slice — same non-contig issue.
 def fused_rope(q, k, freqs_cis, positions, inverse=False):
     nt = q.shape[0]; nq = q.shape[1]
     nk = k.shape[1] if k is not None else 0
     rd = q.shape[-1]
     has_k = 1 if k is not None else 0
+    # q strides: [stride_tok, stride_head, stride_elem]. stride_elem is normally 1.
+    # The kernel indexes dst[tok][head][i] = base + tok*st_t + head*st_h + i*1.
+    qst = q.stride()
+    qst_t, qst_h = int(qst[0]), int(qst[1])
+    if k is not None:
+        kst = k.stride(); kst_t, kst_h = int(kst[0]), int(kst[1])
+    else:
+        kst_t = kst_h = 0
     # freqs_cis is complex64 [max_pos, rd/2]; memory layout = real,imag interleaved
     # = our interleaved format. View as float32 [max_pos, rd].
     if freqs_cis.dtype == torch.complex64:
         fc = freqs_cis.view(torch.float32).reshape(freqs_cis.shape[0], rd)
     else:
         fc = freqs_cis
-    _LIB.launch_fused_rope(q.data_ptr(), k.data_ptr() if k is not None else 0,
+    _LIB.launch_fused_rope_strided(q.data_ptr(), k.data_ptr() if k is not None else 0,
                            fc.data_ptr(), positions.data_ptr(),
-                           nt, nq, nk, rd, has_k, _s())
+                           nt, nq, nk, rd, has_k, qst_t, qst_h, kst_t, kst_h, _s())
     return None  # in-place
 
 # 6. topk_transform_512  (aligned: in-place out_page_indices)
