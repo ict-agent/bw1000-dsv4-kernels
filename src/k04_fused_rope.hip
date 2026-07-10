@@ -46,6 +46,47 @@ __global__ void fused_rope_kernel(
     dst[off + idx + 1] = f2b(oi_);
 }
 
+// Strided variant: engine passes q = q_full[..., -rope_dim:] which is NON-CONTIGUOUS
+// (stride[1] = head_dim, not rope_dim). Must index with explicit strides to stay
+// in-place on the original q_full memory. Element stride assumed 1 (interleaved pairs).
+__global__ void fused_rope_kernel_strided(
+    __hip_bfloat16* q, __hip_bfloat16* k,
+    const float* freqs_cis, const int* positions,
+    int num_tokens, int num_q_heads, int num_k_heads, int rope_dim, int has_k,
+    int64_t qst_t, int64_t qst_h, int64_t kst_t, int64_t kst_h
+) {
+    const int wpb = blockDim.x >> 5;
+    const int gwp = (blockIdx.x * wpb) + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31;
+    const int total_heads = num_q_heads + (has_k ? num_k_heads : 0);
+    if (total_heads == 0) return;
+    const int tok = gwp / total_heads;
+    const int h   = gwp % total_heads;
+    if (tok >= num_tokens) return;
+    const int n_pairs = rope_dim >> 1;
+    if (lane >= n_pairs) return;
+
+    bool is_q = (h < num_q_heads);
+    int local_h = is_q ? h : (h - num_q_heads);
+    __hip_bfloat16* dst = is_q ? q : k;
+    if (!is_q && !has_k) return;
+    int64_t st_t = is_q ? qst_t : kst_t;
+    int64_t st_h = is_q ? qst_h : kst_h;
+
+    int64_t base = (int64_t)tok * st_t + (int64_t)local_h * st_h;
+    int pos = positions[tok];
+    const float* freq = freqs_cis + (int64_t)pos * rope_dim + (lane << 1);
+    float fr = freq[0], fi = freq[1];
+
+    int idx = lane << 1;
+    float xr = b2f(dst[base + idx]);
+    float xi = b2f(dst[base + idx + 1]);
+    float or_ = xr * fr - xi * fi;
+    float oi_ = xr * fi + xi * fr;
+    dst[base + idx]     = f2b(or_);
+    dst[base + idx + 1] = f2b(oi_);
+}
+
 extern "C" {
 void launch_fused_rope(void* q,void* k,const void* freqs_cis,const void* positions,
     int num_tokens,int num_q_heads,int num_k_heads,int rope_dim,int has_k,hipStream_t st){
@@ -57,4 +98,15 @@ void launch_fused_rope(void* q,void* k,const void* freqs_cis,const void* positio
     fused_rope_kernel<<<blocks,threads,0,st>>>(
         (__hip_bfloat16*)q,(__hip_bfloat16*)k,(const float*)freqs_cis,(const int*)positions,
         num_tokens,num_q_heads,num_k_heads,rope_dim,has_k);}
+void launch_fused_rope_strided(void* q,void* k,const void* freqs_cis,const void* positions,
+    int num_tokens,int num_q_heads,int num_k_heads,int rope_dim,int has_k,
+    int64_t qst_t,int64_t qst_h,int64_t kst_t,int64_t kst_h,hipStream_t st){
+    int total_heads = num_q_heads + (has_k ? num_k_heads : 0);
+    int total_warps = num_tokens * total_heads;
+    int warps_per_block = 4;
+    int blocks = (total_warps + warps_per_block - 1) / warps_per_block;
+    int threads = warps_per_block * 32;
+    fused_rope_kernel_strided<<<blocks,threads,0,st>>>(
+        (__hip_bfloat16*)q,(__hip_bfloat16*)k,(const float*)freqs_cis,(const int*)positions,
+        num_tokens,num_q_heads,num_k_heads,rope_dim,has_k,qst_t,qst_h,kst_t,kst_h);}
 }
