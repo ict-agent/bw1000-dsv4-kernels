@@ -120,6 +120,8 @@ op-chain (`e2e_op_chain.py`, 单 MLP step): **2.28x**（隔离测试，elementwi
 ```
 4 个 call-site patch 全部命中。offline 验证 `dv4.fused_rope is W.fused_rope: True`。
 
+**rope non-contig 挂死根因 + 修复**：call-site patch 命中后 prefill 第一次 generate 即挂死（无响应、无 crash）。根因：引擎调 `fused_rope(q[..., -rope_dim:], None, ...)`，q 是 `[nt, nheads, head_dim]` 的**非连续切片**（stride[1]=head_dim≠rope_dim）。原 kernel 假设连续 → 读错内存 → q 损坏 → 下游 attention 挂死。`.contiguous()` 会破坏 in-place 语义（engine 持有 q_full）。修复：`fused_rope_kernel_strided` 接收 q 的 stride，`off = tok*stride_tok + head*stride_head`。验证：max err 0.02 vs torch ref，in-place on q_full 确认。**这是 call-site patch 命中后才暴露的 bug**——之前 def-patch 不命中所以没触发。
+
 ## 5.2 GPU 运维（crash 后必做）
 
 sglang TP worker crash 后显存不释放（zombie VRAM，rocm-smi 显示 68% used 但无 python 进程），导致下次启动 load weight OOM。**每次 crash 后必做**：
