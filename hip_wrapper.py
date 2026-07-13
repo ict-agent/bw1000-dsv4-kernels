@@ -50,6 +50,24 @@ _LIB.launch_grouped_gemm_int8.argtypes = [P,P,P,P,P,P,ctypes.c_int,ctypes.c_int,
 def _s():
     return torch.cuda.current_stream().cuda_stream
 
+# ---- Debug instrumentation: print each wrapper call (first _DBG_N calls) ----
+import os as _os
+_DBG = _os.environ.get("SGLANG_HIP_DEBUG", "0") == "1"
+_DBG_N = int(_os.environ.get("SGLANG_HIP_DEBUG_N", "50"))
+_dbg_cnt = {}
+def _dbg(name, a):
+    if not _DBG: return
+    c = _dbg_cnt.get(name, 0)
+    if c < _DBG_N:
+        shapes = []
+        for v in a:
+            try: shapes.append(tuple(int(s) for s in v.shape) + (str(v.dtype),))
+            except Exception:
+                try: shapes.append(type(v).__name__)
+                except Exception: shapes.append("?")
+        print(f"[HIPDBG] {name}#{c} {shapes}", flush=True)
+        _dbg_cnt[name] = c + 1
+
 # ---- Optional profiling (SGLANG_HIP_PROFILE=1) ----
 # Records GPU time per launch_xxx in REAL inference. Two safety rules:
 #  (1) skip timing while a CUDA graph is being captured — synchronize() inside
@@ -137,6 +155,7 @@ def _buf(shape, dtype, device, name=""):
 # 1. per_token_quant_int8  (aligned with lmslim: returns (q, scales))
 # ============================================================
 def per_token_quant_int8(x, scale_dtype=None, cal_sum=False):
+    _dbg("ptq", [x])
     M, N = x.shape
     q = _buf((M, N), torch.int8, x.device, "ptq_q")
     s = _buf((M, 1), torch.float32, x.device, "ptq_s")   # lmslim returns [M,1]
@@ -157,6 +176,7 @@ def per_token_group_quant_int8(x, group_size=128, eps=1e-10, dtype=torch.int8):
 # 3. silu_and_mul  (aligned with SiluAndMul.forward_cuda: x [M,2N] -> out [M,N])
 #    kernel reads gate=x[:,i], up=x[:,N+i] (split layout, sglang uses cat([gate,up]))
 def silu_and_mul(x):
+    _dbg("silu", [x])
     d = x.shape[-1] // 2
     out_shape = x.shape[:-1] + (d,)
     out = _buf(tuple(out_shape), x.dtype, x.device, "silu_out")
@@ -184,6 +204,7 @@ def rmsnorm_self(q, eps=1e-6):
 #    we pass q's strides to the kernel so it indexes correctly. For k, engine passes
 #    .unsqueeze(1) slice — same non-contig issue.
 def fused_rope(q, k, freqs_cis, positions, inverse=False):
+    _dbg("rope", [q, k, freqs_cis, positions])
     nt = q.shape[0]; nq = q.shape[1]
     nk = k.shape[1] if k is not None else 0
     rd = q.shape[-1]
@@ -209,6 +230,7 @@ def fused_rope(q, k, freqs_cis, positions, inverse=False):
 
 # 6. topk_transform_512  (aligned: in-place out_page_indices)
 def topk_transform_512(scores, seq_lens, page_tables, out_page_indices, page_size, out_raw_indices=None):
+    _dbg("topk", [scores, seq_lens, page_tables, out_page_indices])
     b = scores.shape[0]; cap = scores.shape[1]
     ptr_stride = page_tables.shape[1]
     k = out_page_indices.shape[1]  # 512
@@ -220,6 +242,7 @@ def topk_transform_512(scores, seq_lens, page_tables, out_page_indices, page_siz
 
 # 7. tilelang_make_swa_prefill_indices  (aligned: in-place swa_indices)
 def tilelang_make_swa_prefill_indices(seq_lens_k, seq_lens_q, swa_indices, cu_seqlens_q=None):
+    _dbg("swa", [seq_lens_k, seq_lens_q, swa_indices])
     b = seq_lens_q.shape[0]
     window = swa_indices.shape[1]
     nq = swa_indices.shape[0]

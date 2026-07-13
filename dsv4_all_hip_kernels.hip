@@ -332,17 +332,18 @@ __global__ void silu_mul_kernel(const __hip_bfloat16* g,const __hip_bfloat16* u,
 }
 
 // split-layout variant: x [M, 2N] with gate=x[:,0:N], up=x[:,N:2N]; out [M, N]
-template<int BS,int EPT>
+// stride loop (covers arbitrary N, not just BS*EPT) — needed for DeepSeek
+// intermediate_size N=18432 where BS*EPT=2048 would miss most elements.
+template<int BS>
 __global__ void silu_mul_split_kernel(const __hip_bfloat16* x, __hip_bfloat16* out, int M, int N){
     int row=blockIdx.x; if(row>=M)return;
     int tid=threadIdx.x;
     int off_g = row * 2 * N;          // gate row start
     int off_u = off_g + N;            // up row start
     int off_o = row * N;              // out row start
-    #pragma unroll
-    for(int i=0;i<EPT;i++){int idx=tid+i*BS; if(idx<N){
+    for(int idx=tid; idx<N; idx+=BS){
         float gv=b2f(x[off_g+idx]), uv=b2f(x[off_u+idx]);
-        out[off_o+idx]=f2b((1.f/(1.f+expf(-gv)))*gv*uv);}}
+        out[off_o+idx]=f2b((1.f/(1.f+expf(-gv)))*gv*uv);}
 }
 
 // ============================================================
@@ -969,8 +970,8 @@ void launch_silu_mul(const void* g,const void* u,void* out,int M,int N,hipStream
     constexpr int BS=256,EPT=8;
     silu_mul_kernel<BS,EPT><<<M,BS,0,st>>>((const __hip_bfloat16*)g,(const __hip_bfloat16*)u,(__hip_bfloat16*)out,M,N);}
 void launch_silu_mul_split(const void* x,void* out,int M,int N,hipStream_t st){
-    constexpr int BS=256,EPT=8;
-    silu_mul_split_kernel<BS,EPT><<<M,BS,0,st>>>((const __hip_bfloat16*)x,(__hip_bfloat16*)out,M,N);}
+    constexpr int BS=256;
+    silu_mul_split_kernel<BS><<<M,BS,0,st>>>((const __hip_bfloat16*)x,(__hip_bfloat16*)out,M,N);}
 void launch_silu_mul_masked_quant(const void* g,const void* u,const int* mask,
     void* q,void* s,int M,int N,hipStream_t st){
     constexpr int BS=256,EPT=8; int sm=(BS/64+1)*4;
