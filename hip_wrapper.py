@@ -217,6 +217,10 @@ def fused_rope(q, k, freqs_cis, positions, inverse=False):
     nk = k.shape[1] if k is not None else 0
     rd = q.shape[-1]
     has_k = 1 if k is not None else 0
+    # CRITICAL: engine passes positions as int64 (torch.long). Our kernel reads int*
+    # (4 bytes) -> would read every-other element (garbage rotations). Convert to int32.
+    if positions.dtype != torch.int32:
+        positions = positions.to(torch.int32)
     # q strides: [stride_tok, stride_head, stride_elem]. stride_elem is normally 1.
     # The kernel indexes dst[tok][head][i] = base + tok*st_t + head*st_h + i*1.
     qst = q.stride()
@@ -239,6 +243,12 @@ def fused_rope(q, k, freqs_cis, positions, inverse=False):
 # 6. topk_transform_512  (aligned: in-place out_page_indices)
 def topk_transform_512(scores, seq_lens, page_tables, out_page_indices, page_size, out_raw_indices=None):
     _dbg("topk", [scores, seq_lens, page_tables, out_page_indices])
+    # CRITICAL: engine c4_seq_lens is int64 (seq_lens // 4 preserves int64). Kernel reads
+    # int* (4 bytes) -> misreads. Convert seq_lens (and guard page_tables) to int32.
+    if seq_lens.dtype != torch.int32:
+        seq_lens = seq_lens.to(torch.int32)
+    if page_tables.dtype != torch.int32:
+        page_tables = page_tables.to(torch.int32)
     b = scores.shape[0]; cap = scores.shape[1]
     ptr_stride = page_tables.shape[1]
     k = out_page_indices.shape[1]  # 512
