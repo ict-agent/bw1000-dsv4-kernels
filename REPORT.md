@@ -122,6 +122,22 @@ op-chain (`e2e_op_chain.py`, 单 MLP step): **2.28x**（隔离测试，elementwi
 
 **rope non-contig 挂死根因 + 修复**：call-site patch 命中后 prefill 第一次 generate 即挂死（无响应、无 crash）。根因：引擎调 `fused_rope(q[..., -rope_dim:], None, ...)`，q 是 `[nt, nheads, head_dim]` 的**非连续切片**（stride[1]=head_dim≠rope_dim）。原 kernel 假设连续 → 读错内存 → q 损坏 → 下游 attention 挂死。`.contiguous()` 会破坏 in-place 语义（engine 持有 q_full）。修复：`fused_rope_kernel_strided` 接收 q 的 stride，`off = tok*stride_tok + head*stride_head`。验证：max err 0.02 vs torch ref，in-place on q_full 确认。**这是 call-site patch 命中后才暴露的 bug**——之前 def-patch 不命中所以没触发。
 
+**swa / topk crash 修复**（call-site 命中后第二次 generate 即 crash）：
+- **swa**：两个 bug。(1) `old_kv_start = batch * window`（应为 `seq_idx * window`，per-seq）；(2) batch-id 用 `__shfl_xor` reduce，wavefront64 下 token 边界 token（gwp=cu[b]）拿到 seq_idx=0 而非正确 b → prefix 错 → 索引越界 → attention crash。修复：`old_kv_start = seq_idx * window`；batch-id 改 lane-0 串行搜索（batch 小）+ per-warp `s_bid[wid]` slot。
+- **topk**：radix kernel 需 `cap*4` bytes shared mem，cap>~11500 超 gfx936 block smem → launch 静默失败 → out 全 -1 → 下游 page fault。修复：integration 层 `hip_topk` 在 smem>46KB 时回退到引擎 `pytorch_vec`（正确但不加速）。
+
+**真实 shape 全量验证**（`test_real_shape_vs_engine.py`，对引擎原始函数做参照，5/5 PASS）：
+
+| op | 参照 | 真实 shape | 结果 |
+|---|---|---|---|
+| per_token_quant_int8 | lmslim | MoE chunk slice (dim0=连续), M∈{1,64,256,448,8192} | bit-exact PASS |
+| silu_and_mul | lightop fuse_silu_and_mul | interleaved gate_up, M∈{1,64,256,1536,8192} | PASS (量化噪声) |
+| fused_rope | torch ref | 非连续 q 切片 [nt,8,64] fr [nt,8,192], nt∈{1,8,256,8192} | PASS + in-place |
+| topk_transform_512 | pytorch_vec(ENGINE) | cap∈{512,1024,4096,8192,10000} | PASS (multiset match) |
+| swa_prefill_indices | torch ref(engine formula) | b∈{1,4,8}, window=128 | PASS |
+
+**关键诚实结论**：之前 REPORT 里的 "1.0x A/B" 其实**不是真 A/B**——call-site binding bug 导致 ptq/rope/swa 三个 patch 从未生效，那次是 baseline vs baseline。call-site 修复后 patch 真跑，才暴露上述 kernel 在真实路径的正确性 bug。修复 + 真实 shape 验证 5/5 PASS 后，才能开始真正的 A/B。
+
 ## 5.2 GPU 运维（crash 后必做）
 
 sglang TP worker crash 后显存不释放（zombie VRAM，rocm-smi 显示 68% used 但无 python 进程），导致下次启动 load weight OOM。**每次 crash 后必做**：
