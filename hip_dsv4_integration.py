@@ -176,8 +176,20 @@ def _try_impl():
             from sglang.srt.layers.attention.compressed import indexer as ix
             if not getattr(ix, "_hip_topk", False):
                 ix._hip_topk = True
-                ix.topk_transform_512_pytorch_vectorized = W.topk_transform_512
-                _patched.add("topk"); print("[HIP-DSV4] patched indexer.topk_transform_512", flush=True)
+                _orig_topk = ix.topk_transform_512_pytorch_vectorized
+                ix._hip_topk_orig = _orig_topk   # save for fallback
+                # radix-select kernel needs cap*4 bytes shared mem; gfx936 block smem
+                # ceiling ~48KB dynamic. Large context (cap>~11500) would silently fail
+                # launch -> garbage out -> downstream page fault. Fall back to engine
+                # pytorch_vec in that case (still correct, just not faster).
+                def hip_topk(scores, seq_lens, page_tables, out_page_indices, page_size, out_raw_indices=None):
+                    cap = scores.shape[1]
+                    smem = cap * 4 + 259 * 4 + 512 * 4
+                    if smem > 46000:
+                        return _orig_topk(scores, seq_lens, page_tables, out_page_indices, page_size, out_raw_indices)
+                    return W.topk_transform_512(scores, seq_lens, page_tables, out_page_indices, page_size, out_raw_indices)
+                ix.topk_transform_512_pytorch_vectorized = hip_topk
+                _patched.add("topk"); print("[HIP-DSV4] patched indexer.topk_transform_512 (fallback>cap11500)", flush=True)
         except Exception as e: print(f"[HIP-DSV4] topk: {e}", flush=True)
 
     # SWA

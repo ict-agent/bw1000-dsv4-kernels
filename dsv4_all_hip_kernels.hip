@@ -814,24 +814,21 @@ __global__ void swa_prefill_indices_kernel(
     const int wpb = blockDim.x >> 5;
     const int gwp = (blockIdx.x * wpb) + (threadIdx.x >> 5);
     const int lane = threadIdx.x & 31;
+    const int wid = threadIdx.x >> 5;   // warp id within block (for per-warp shared slot)
     if (gwp >= num_q_tokens) return;
-    // find batch_id: largest b with cu_seqlens_q[b] <= gwp
+    // find batch_id: largest b with cu_seqlens_q[b] <= gwp < cu_seqlens_q[b+1].
+    // batch is small (<=8 for TP); lane 0 does a serial search — avoids wavefront64
+    // __shfl_xor reduce pitfalls.
     __shared__ int s_bid[8];
-    int bid = -1;
-    for (int b = lane; b < batch; b += 32) {
-        if (cu_seqlens_q[b] <= gwp && gwp < cu_seqlens_q[b + 1]) bid = b;
+    if (lane == 0) {
+        int found = 0;
+        for (int b = 0; b < batch; b++) {
+            if (cu_seqlens_q[b] <= gwp && gwp < cu_seqlens_q[b + 1]) { found = b; break; }
+        }
+        s_bid[wid] = found;
     }
-    // reduce: any lane that found a bid -> take min valid (unique)
-    bid = (bid < 0) ? 0x7fffffff : bid;
-    int mbid = bid;
-    #pragma unroll
-    for (int o = 16; o > 0; o >>= 1) {
-        int v = __shfl_xor(bid, o);
-        if (v < mbid) mbid = v;
-    }
-    if (lane == 0) s_bid[0] = (mbid == 0x7fffffff) ? 0 : mbid;
     __syncthreads();
-    int seq_idx = s_bid[0];
+    int seq_idx = s_bid[wid];
     int kv_len = seq_lens_k[seq_idx];
     int qo_len = seq_lens_q[seq_idx];
     int cum_qo_len = cu_seqlens_q[seq_idx];
@@ -839,7 +836,7 @@ __global__ void swa_prefill_indices_kernel(
     int curr_qo = gwp - cum_qo_len;
     int end_abs = prefix_len + curr_qo + 1;
     int start_abs = max(end_abs - window, 0);
-    int old_kv_start = batch * window;            // old KV pool (prefix) per-seq window slots
+    int old_kv_start = seq_idx * window;            // per-seq old (prefix) KV pool slots (was wrongly `batch*window`)
     int new_kv_start = batch * window + cum_qo_len;
     int* out_row = indices + gwp * window;
     for (int j = lane; j < window; j += 32) {

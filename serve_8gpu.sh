@@ -4,6 +4,7 @@
 # Usage: SGLANG_USE_HIP_DSV4=1 (set to enable HIP patches) bash serve_8gpu.sh
 set -e
 # rm -rf ~/.cache/   # disabled: forces lightop/tilelang full recompile each run (~20min, can hang)
+ulimit -c 0          # disable core dumps — sglang crashes produce 5G+ cores that fill disk
 ulimit -l unlimited
 export HIP_KERNEL_BATCH_CEILING=100
 export GPU_MAX_HW_QUEUES=3
