@@ -50,23 +50,23 @@ _LIB.launch_grouped_gemm_int8.argtypes = [P,P,P,P,P,P,ctypes.c_int,ctypes.c_int,
 def _s():
     return torch.cuda.current_stream().cuda_stream
 
-# ---- Debug instrumentation: print each wrapper call (first _DBG_N calls) ----
+# ---- Debug instrumentation: print each wrapper call (op#count) to locate hang op ----
 import os as _os
 _DBG = _os.environ.get("SGLANG_HIP_DEBUG", "0") == "1"
-_DBG_N = int(_os.environ.get("SGLANG_HIP_DEBUG_N", "50"))
 _dbg_cnt = {}
 def _dbg(name, a):
     if not _DBG: return
     c = _dbg_cnt.get(name, 0)
-    if c < _DBG_N:
+    _dbg_cnt[name] = c + 1
+    # print first 3 with shapes, then every 200th (op#count only) to track progress
+    if c < 3:
         shapes = []
         for v in a:
             try: shapes.append(tuple(int(s) for s in v.shape) + (str(v.dtype),))
-            except Exception:
-                try: shapes.append(type(v).__name__)
-                except Exception: shapes.append("?")
+            except Exception: shapes.append(type(v).__name__)
         print(f"[HIPDBG] {name}#{c} {shapes}", flush=True)
-        _dbg_cnt[name] = c + 1
+    elif c % 200 == 0:
+        print(f"[HIPDBG] {name}#{c} ...", flush=True)
 
 # ---- Optional profiling (SGLANG_HIP_PROFILE=1) ----
 # Records GPU time per launch_xxx in REAL inference. Two safety rules:
@@ -141,8 +141,16 @@ import atexit; atexit.register(dump_timings)
 
 # Static buffer pool: graph-capture-safe (stable pointer across replays).
 # key includes a name tag so different outputs of the same shape don't alias.
+# Static buffer pool: graph-capture-safe (stable pointer across replays).
+# CRITICAL: only pool during cuda graph capture. In EAGER (prefill) path, pooling
+# aliases same-shape outputs across sequential calls — if silu(x1)'s output isn't
+# consumed by the downstream async GEMM before silu(x2) overwrites the same buffer,
+# the GEMM reads corrupted/NaN data -> hang. So: capture -> pool (stable ptr),
+# eager -> fresh alloc (no aliasing).
 _pool = {}
 def _buf(shape, dtype, device, name=""):
+    if not _capturing():
+        return torch.empty(shape, device=device, dtype=dtype)
     key = (name, tuple(int(s) for s in shape), dtype, str(device))
     b = _pool.get(key)
     if b is None or tuple(b.shape) != tuple(shape):

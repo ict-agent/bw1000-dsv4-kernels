@@ -185,7 +185,11 @@ def _try_impl():
                 def hip_topk(scores, seq_lens, page_tables, out_page_indices, page_size, out_raw_indices=None):
                     cap = scores.shape[1]
                     smem = cap * 4 + 259 * 4 + 512 * 4
-                    if smem > 46000:
+                    # safe-guards: fall back to engine pytorch_vec when the kernel's
+                    # contiguous-assumption could break or shared mem exceeds budget.
+                    pt_noncontig = (page_tables.stride(0) != page_tables.shape[1]) or (page_tables.stride(1) != 1)
+                    sc_noncontig = (scores.stride(0) != cap) or (scores.stride(1) != 1)
+                    if smem > 46000 or pt_noncontig or sc_noncontig:
                         return _orig_topk(scores, seq_lens, page_tables, out_page_indices, page_size, out_raw_indices)
                     return W.topk_transform_512(scores, seq_lens, page_tables, out_page_indices, page_size, out_raw_indices)
                 ix.topk_transform_512_pytorch_vectorized = hip_topk
