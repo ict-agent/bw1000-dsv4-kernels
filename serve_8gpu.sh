@@ -48,5 +48,6 @@ python3 -m sglang.launch_server \
   --kv-cache-dtype auto \
   --cuda-graph-max-bs 256 \
   --mem-fraction-static ${MEM_FRACTION:-0.76} \
+  --disable-overlap-schedule \
   --disable-flashinfer-autotune \
   2>&1 | tee -a /workspace/server_${MODE:-run}.log
