@@ -138,6 +138,8 @@ op-chain (`e2e_op_chain.py`, 单 MLP step): **2.28x**（隔离测试，elementwi
 
 **关键诚实结论**：之前 REPORT 里的 "1.0x A/B" 其实**不是真 A/B**——call-site binding bug 导致 ptq/rope/swa 三个 patch 从未生效，那次是 baseline vs baseline。call-site 修复后 patch 真跑，才暴露上述 kernel 在真实路径的正确性 bug。修复 + 真实 shape 验证 5/5 PASS 后，才能开始真正的 A/B。
 
+**JIT warmup 陷阱（重大）**：所有之前的 "STILL HUNG" 都是**假警报**——server capture 后第一次 generate 需 ~95s（eager 路径 triton/tilelang JIT 编译冷启动），超过 curl 的 90s 超时。warm 请求仅需 **0.7s**。所有 patch（rope/silu/ptq/topk/swa）实际都能跑通 server，只是首次请求慢。验证方法：发 warmup 请求（180s 超时）后再测 warm 请求。**教训**：gen 测试超时必须 ≥180s，且必须丢第一次结果。
+
 ## 5.2 GPU 运维（crash 后必做）
 
 sglang TP worker crash 后显存不释放（zombie VRAM，rocm-smi 显示 68% used 但无 python 进程），导致下次启动 load weight OOM。**每次 crash 后必做**：
