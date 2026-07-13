@@ -142,15 +142,13 @@ import atexit; atexit.register(dump_timings)
 # Static buffer pool: graph-capture-safe (stable pointer across replays).
 # key includes a name tag so different outputs of the same shape don't alias.
 # Static buffer pool: graph-capture-safe (stable pointer across replays).
-# CRITICAL: only pool during cuda graph capture. In EAGER (prefill) path, pooling
-# aliases same-shape outputs across sequential calls — if silu(x1)'s output isn't
-# consumed by the downstream async GEMM before silu(x2) overwrites the same buffer,
-# the GEMM reads corrupted/NaN data -> hang. So: capture -> pool (stable ptr),
-# eager -> fresh alloc (no aliasing).
+# NOTE: tried fresh-alloc in eager (if not _capturing()) to avoid async aliasing,
+# but torch.cuda.is_current_stream_capturing() is unreliable inside the engine's
+# capture flow -> returned False during actual capture -> torch.empty inside
+# graph capture -> deadlock. Reverted to always-pool (the aliasing concern was a
+# false theory; the real correctness bug was the int64 dtype, now fixed at kernel level).
 _pool = {}
 def _buf(shape, dtype, device, name=""):
-    if not _capturing():
-        return torch.empty(shape, device=device, dtype=dtype)
     key = (name, tuple(int(s) for s in shape), dtype, str(device))
     b = _pool.get(key)
     if b is None or tuple(b.shape) != tuple(shape):
