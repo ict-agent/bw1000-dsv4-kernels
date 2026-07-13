@@ -140,6 +140,12 @@ op-chain (`e2e_op_chain.py`, 单 MLP step): **2.28x**（隔离测试，elementwi
 
 **JIT warmup 陷阱（重大）**：所有之前的 "STILL HUNG" 都是**假警报**——server capture 后第一次 generate 需 ~95s（eager 路径 triton/tilelang JIT 编译冷启动），超过 curl 的 90s 超时。warm 请求仅需 **0.7s**。所有 patch（rope/silu/ptq/topk/swa）实际都能跑通 server，只是首次请求慢。验证方法：发 warmup 请求（180s 超时）后再测 warm 请求。**教训**：gen 测试超时必须 ≥180s，且必须丢第一次结果。
 
+**int64 dtype 根因（输出 garbage 的真因）**：rope-only server 能跑（0.7s warm）但输出 garbage（"package,com.tencent" 而非 "Paris"）。根因：引擎传 `positions`（torch.long int64）给 fused_rope、`c4_seq_lens`（int64，=seq_lens//4）给 topk，而 kernel 读 `int*`（4 字节）→ 隔一个读一个 → 旋转/topk 全错。离线测试用 int32 所以没暴露。swa 安全（引擎在 make_swa_ring_buffer_indices 里 `seq_lens.to(torch.int32)` 后才调用）。page_table 是 int32（引擎创建）。
+- 修复 v1（wrapper `.to(int32)`）：eager 正确，但 **graph capture 期 alloc → capture 死锁**（卡在 48 lightop module，CPU 0%、进程 pipe_r 死锁）。
+- 修复 v2（kernel 直接读 `long long*`）：无 alloc，graph-safe。验证 int64 输入：rope maxerr 0.006、topk multiset match True。
+
+**all-patches capture 死锁（待修）**：rope+silu 的 capture 能完成，但加 ptq/topk/swa 任一后 capture 死锁（GPU 0%、进程 pipe_r、卡在 lightop 阶段）。疑似 topk radix select 在某个 capture batch 的 seq_len/cap 组合下 `need` 不收敛 → 死循环，或 ptq/silu 在 capture 期与 graph 的 stream 交互问题。**当前可用子集：rope+silu**（capture OK，输出待 int64 修复后验证）。
+
 ## 5.2 GPU 运维（crash 后必做）
 
 sglang TP worker crash 后显存不释放（zombie VRAM，rocm-smi 显示 68% used 但无 python 进程），导致下次启动 load weight OOM。**每次 crash 后必做**：
