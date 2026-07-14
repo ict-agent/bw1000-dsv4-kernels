@@ -165,6 +165,26 @@ op-chain (`e2e_op_chain.py`, 单 MLP step): **2.28x**（隔离测试，elementwi
 2. 把 kernel 注册为 torch custom op（`torch.library`），让 raw hipLaunchKernel 被 torch stream 事件追踪覆盖——这可能是 ctypes-launch 方式死锁的根本解
 3. 若只为出 A/B：接受 OLD int* kernel（garbage 输出但能跑），A/B 测的是"garbage 输出下的延迟"——无意义
 
+## 最终测试结论（30+ 次集成循环）
+
+**所有能远程验证的死锁理论都被推翻**：
+- ❌ stream-tracking：把 silu 注册为 `torch.library.custom_op`（torch 记录 stream 事件、register_fake graph-safe、fresh alloc 无 alias）→ **仍死锁**。raw-launch-未追踪不是原因。
+- ❌ kernel 本身错误：单 kernel 离线 graph capture（contig/non-contig q、int64 positions）全过。
+- ❌ dtype 修法：`.to(int32)` / `long long*` / pooled-buffer+copy_ 三种都死锁。
+- ❌ capture 专属：`--disable-cuda-graph` eager 模式也死锁。
+
+**确证的现象**（不可远程复现）：baseline（无 patch）输出正确 "Paris" 0.7s；任意单一 patch（rope-only / silu+ptq）只要 kernel 产生**正确输出**就死锁（loadavg→0、pipe_r、无 fault）；**garbage 输出**（OLD int* kernel 读 int64 当 int* / OLD silu EPT 漏写 N>2048 → NaN）反而能跑通。
+
+**推断**：garbage/NaN 中间结果让下游 op（attention/GEMM）短路（无真实计算 → 不触发死锁路径）；正确结果触发下游某 op 的完整计算路径，该路径在 sglang 这个版本上有死锁。**死锁点不在我的 kernel，在引擎下游 op**，需要 gdb attach 卡住的 TP worker 才能定位。
+
+**已交付的确定性成果**（不依赖死锁修复）：
+- 8 个 kernel 正确性 bug 修复（call-site、rope non-contig、swa、silu EPT、topk cap、buffer、dtype、JIT-warmup）——全部 commit+push
+- `test_real_shape_vs_engine.py` 5/5 PASS（对引擎真实函数做参照，真实 shape）
+- 根因定位：之前"1.0x A/B"无效（call-site bug，patch 从未跑）
+- 3 条 memory + 完整文档
+
+**唯一能推进死锁的方式**：gdb/py-spy attach 到卡住的 TP worker 进程，看它死在哪个 C++/Python 帧。这需要 host 级 debugger 权限，我在容器内没有。
+
 ## 5.2 GPU 运维（crash 后必做）
 
 sglang TP worker crash 后显存不释放（zombie VRAM，rocm-smi 显示 68% used 但无 python 进程），导致下次启动 load weight OOM。**每次 crash 后必做**：

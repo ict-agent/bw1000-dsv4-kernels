@@ -181,17 +181,51 @@ def per_token_group_quant_int8(x, group_size=128, eps=1e-10, dtype=torch.int8):
 
 # 3. silu_and_mul  (aligned with SiluAndMul.forward_cuda: x [M,2N] -> out [M,N])
 #    kernel reads gate=x[:,i], up=x[:,N+i] (split layout, sglang uses cat([gate,up]))
-def silu_and_mul(x):
-    _dbg("silu", [x])
-    d = x.shape[-1] // 2
-    out_shape = x.shape[:-1] + (d,)
-    out = _buf(tuple(out_shape), x.dtype, x.device, "silu_out")
-    M = 1
-    for dim in out_shape[:-1]:
-        M *= dim
-    # split-layout kernel reads gate=x[:,0:d], up=x[:,d:2d] directly from x (no copy)
-    _LIB.launch_silu_mul_split(x.data_ptr(), out.data_ptr(), M, d, _s())
-    return out
+#
+# CRITICAL: wrapped as a torch custom_op so torch tracks the op (records stream
+# events). Raw hipLaunchKernel via ctypes is NOT torch-tracked -> downstream ops
+# on other streams that consume the output wait for an event never recorded ->
+# deadlock (only when output is valid, i.e. real downstream compute runs; NaN
+# output short-circuits downstream -> appears to "work"). custom_op fixes this.
+# Fresh output alloc (not pooled) — torch manages graph-capture alloc via
+# register_fake, so graph-safe AND no cross-call aliasing.
+try:
+    from torch.library import custom_op as _custom_op
+
+    @_custom_op("hipdsv4::silu_and_mul", mutates_args=())
+    def _silu_and_mul_op(x: torch.Tensor) -> torch.Tensor:
+        d = x.shape[-1] // 2
+        out_shape = x.shape[:-1] + (d,)
+        out = torch.empty(out_shape, dtype=x.dtype, device=x.device)
+        M = 1
+        for dim in out_shape[:-1]:
+            M *= dim
+        _LIB.launch_silu_mul_split(x.data_ptr(), out.data_ptr(), M, d, _s())
+        return out
+
+    @_silu_and_mul_op.register_fake
+    def _silu_and_mul_fake(x):
+        d = x.shape[-1] // 2
+        return torch.empty(x.shape[:-1] + (d,), dtype=x.dtype, device=x.device)
+
+    def silu_and_mul(x):
+        _dbg("silu", [x])
+        return _silu_and_mul_op(x)
+    _SILU_CUSTOM = True
+except Exception as _e:
+    _SILU_CUSTOM = False
+    print(f"[HIP-WRAPPER] custom_op unavailable, using raw launch silu: {_e}", flush=True)
+    def silu_and_mul(x):
+        _dbg("silu", [x])
+        d = x.shape[-1] // 2
+        out_shape = x.shape[:-1] + (d,)
+        out = _buf(tuple(out_shape), x.dtype, x.device, "silu_out")
+        M = 1
+        for dim in out_shape[:-1]:
+            M *= dim
+        # split-layout kernel reads gate=x[:,0:d], up=x[:,d:2d] directly from x (no copy)
+        _LIB.launch_silu_mul_split(x.data_ptr(), out.data_ptr(), M, d, _s())
+        return out
 
 # 4. rmsnorm_self  (aligned with jit_kernel: q [*,head_dim] -> out NEW tensor, reads q writes out)
 def rmsnorm_self(q, eps=1e-6):
