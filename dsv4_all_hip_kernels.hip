@@ -240,7 +240,7 @@ __global__ void rmsnorm_self_kernel(const __hip_bfloat16* x, __hip_bfloat16* out
 // ============================================================
 __global__ void fused_rope_kernel(
     __hip_bfloat16* q, __hip_bfloat16* k,
-    const float* freqs_cis, const long long* positions,
+    const float* freqs_cis, const int* positions,
     int num_tokens, int num_q_heads, int num_k_heads, int rope_dim, int has_k
 ) {
     const int wpb = blockDim.x >> 5;            // warps per block
@@ -261,7 +261,7 @@ __global__ void fused_rope_kernel(
 
     int head_count = is_q ? num_q_heads : num_k_heads;
     int64_t off = (int64_t)tok * head_count * rope_dim + (int64_t)local_h * rope_dim;
-    long long pos_ll = positions[tok]; int pos = (int)pos_ll;
+    int pos = positions[tok];
     const float* freq = freqs_cis + (int64_t)pos * rope_dim + (lane << 1);
     float fr = freq[0], fi = freq[1];
 
@@ -280,7 +280,7 @@ __global__ void fused_rope_kernel(
 // real,imag pairs are adjacent in the last dim).
 __global__ void fused_rope_kernel_strided(
     __hip_bfloat16* q, __hip_bfloat16* k,
-    const float* freqs_cis, const long long* positions,
+    const float* freqs_cis, const int* positions,
     int num_tokens, int num_q_heads, int num_k_heads, int rope_dim, int has_k,
     int64_t qst_t, int64_t qst_h, int64_t kst_t, int64_t kst_h
 ) {
@@ -303,7 +303,7 @@ __global__ void fused_rope_kernel_strided(
     int64_t st_h = is_q ? qst_h : kst_h;
 
     int64_t base = (int64_t)tok * st_t + (int64_t)local_h * st_h;
-    long long pos_ll = positions[tok]; int pos = (int)pos_ll;
+    int pos = positions[tok];
     const float* freq = freqs_cis + (int64_t)pos * rope_dim + (lane << 1);
     float fr = freq[0], fi = freq[1];
 
@@ -679,14 +679,14 @@ __device__ __forceinline__ void topk_radix(
 // 10. topk_transform_512  (256 threads/block — gfx936 max 256)
 // ============================================================
 __global__ void topk_transform_kernel(
-    const float* scores, const long long* seq_lens, const int* page_tables,
+    const float* scores, const int* seq_lens, const int* page_tables,
     int* out_indices, int batch, int seq_len_cap, int page_table_stride,
     int page_size, int k_top
 ) {
     int b = blockIdx.x;
     if (b >= batch) return;
     int tid = threadIdx.x;
-    long long sl_ll = seq_lens[b]; int sl = (int)sl_ll;
+    int sl = seq_lens[b];
     if (sl > seq_len_cap) sl = seq_len_cap;
     const float* sc = scores + b * seq_len_cap;
     const int* pt = page_tables + b * page_table_stride;
@@ -953,7 +953,7 @@ void launch_fused_rope(void* q,void* k,const void* freqs_cis,const void* positio
     int blocks = (total_warps + warps_per_block - 1) / warps_per_block;
     int threads = warps_per_block * 32;
     fused_rope_kernel<<<blocks,threads,0,st>>>(
-        (__hip_bfloat16*)q,(__hip_bfloat16*)k,(const float*)freqs_cis,(const long long*)positions,
+        (__hip_bfloat16*)q,(__hip_bfloat16*)k,(const float*)freqs_cis,(const int*)positions,
         num_tokens,num_q_heads,num_k_heads,rope_dim,has_k);}
 void launch_fused_rope_strided(void* q,void* k,const void* freqs_cis,const void* positions,
     int num_tokens,int num_q_heads,int num_k_heads,int rope_dim,int has_k,
@@ -964,7 +964,7 @@ void launch_fused_rope_strided(void* q,void* k,const void* freqs_cis,const void*
     int blocks = (total_warps + warps_per_block - 1) / warps_per_block;
     int threads = warps_per_block * 32;
     fused_rope_kernel_strided<<<blocks,threads,0,st>>>(
-        (__hip_bfloat16*)q,(__hip_bfloat16*)k,(const float*)freqs_cis,(const long long*)positions,
+        (__hip_bfloat16*)q,(__hip_bfloat16*)k,(const float*)freqs_cis,(const int*)positions,
         num_tokens,num_q_heads,num_k_heads,rope_dim,has_k,qst_t,qst_h,kst_t,kst_h);}
 void launch_silu_mul(const void* g,const void* u,void* out,int M,int N,hipStream_t st){
     constexpr int BS=256,EPT=8;
@@ -1002,7 +1002,7 @@ void launch_topk_transform(const void* scores,const void* seq_lens,const void* p
     // shared: keys[cap] uint32 + hist[259] int + sel[k_top] int
     int smem = seq_len_cap * 4 + 259 * 4 + k_top * 4;
     topk_transform_kernel<<<batch,256,smem,st>>>(
-        (const float*)scores,(const long long*)seq_lens,(const int*)page_tables,(int*)out,
+        (const float*)scores,(const int*)seq_lens,(const int*)page_tables,(int*)out,
         batch,seq_len_cap,page_table_stride,page_size,k_top);}
 void launch_mhc_pre(const void* input_mix,const void* mhc_scale,const void* mhc_base,
     void* output_mix,int num_tokens,int mhc_mult,hipStream_t st){

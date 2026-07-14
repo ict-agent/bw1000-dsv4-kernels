@@ -215,8 +215,14 @@ def fused_rope(q, k, freqs_cis, positions, inverse=False):
     nk = k.shape[1] if k is not None else 0
     rd = q.shape[-1]
     has_k = 1 if k is not None else 0
-    # NOTE: kernel reads positions as int64 (long long*) directly — engine passes int64.
-    # No .to(int32) conversion (that would alloc during graph capture and hang it).
+    # CRITICAL: engine passes positions as int64 (torch.long). Kernel reads int* (4 bytes)
+    # -> misreads every-other element -> garbage rotations. Convert int64->int32 via a
+    # POOLED buffer + copy_ (graph-safe: no alloc, copy_ is a captured torch op, pooled
+    # buffer stable across replays). NOT .to(int32) (allocs -> capture deadlock).
+    if positions.dtype != torch.int32:
+        p32 = _buf(tuple(positions.shape), torch.int32, positions.device, "rope_pos32")
+        p32.copy_(positions)
+        positions = p32
     # q strides: [stride_tok, stride_head, stride_elem]. stride_elem is normally 1.
     # The kernel indexes dst[tok][head][i] = base + tok*st_t + head*st_h + i*1.
     qst = q.stride()
@@ -239,9 +245,13 @@ def fused_rope(q, k, freqs_cis, positions, inverse=False):
 # 6. topk_transform_512  (aligned: in-place out_page_indices)
 def topk_transform_512(scores, seq_lens, page_tables, out_page_indices, page_size, out_raw_indices=None):
     _dbg("topk", [scores, seq_lens, page_tables, out_page_indices])
-    # NOTE: kernel reads seq_lens as int64 (long long*) — engine c4_seq_lens is int64
-    # (seq_lens//4 preserves int64). page_tables is int32 (kernel reads int*). No
-    # .to() conversion (would alloc during graph capture and hang it).
+    # CRITICAL: engine c4_seq_lens is int64 (seq_lens//4 preserves int64). Kernel reads
+    # int* -> misreads. Convert int64->int32 via pooled buffer + copy_ (graph-safe, no
+    # alloc). page_tables is already int32 (engine creates it).
+    if seq_lens.dtype != torch.int32:
+        sl32 = _buf(tuple(seq_lens.shape), torch.int32, seq_lens.device, "topk_sl32")
+        sl32.copy_(seq_lens)
+        seq_lens = sl32
     b = scores.shape[0]; cap = scores.shape[1]
     ptr_stride = page_tables.shape[1]
     k = out_page_indices.shape[1]  # 512
