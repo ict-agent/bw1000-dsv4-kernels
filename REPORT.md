@@ -185,6 +185,35 @@ op-chain (`e2e_op_chain.py`, 单 MLP step): **2.28x**（隔离测试，elementwi
 
 **唯一能推进死锁的方式**：gdb/py-spy attach 到卡住的 TP worker 进程，看它死在哪个 C++/Python 帧。这需要 host 级 debugger 权限，我在容器内没有。
 
+## py-spy attach 结果（真相）
+
+容器内 `py-spy` 可用，attach TP0 worker 后发现：**TP0 没有 deadlock，在 forward 执行中**。多次 dump 看到不同帧：
+- `store_cache` → `_jit_fused_store_module` → `build_ninja`（tvm_ffi JIT 编译 fused store kernel，ninja subprocess.communicate，`select` 等编译完成）
+- `_jit_torch_cublas_bf16_fp32` → `wait (file_baton.py)`（等另一个 JIT 编译）
+- `forward_extend` → `forward (deepseek_v4.py)` → `forward_normal (deepseek_v2.py)`（正常 forward 帧）
+
+**loadavg 8+（编译中）→ 1（编译完跑 forward）→ 又编译 → ...**。这是 sglang eager（no-graph）模式下的**逐 op JIT 编译**——每个新 op 第一次遇到就触发 tvm_ffi/tilelang JIT build_ninja（subprocess），要数十秒到数分钟。8 个 TP worker × 43 层 × 多个 op = 几百次 JIT 编译，**首次请求耗时数十分钟**。之前的"死锁"判断是错误的——**根本不是死锁，是 JIT 编译 + forward 交替，被 90~180s curl 超时误判为 hang**。
+
+**结论修正**：sglang eager 模式在这个模型上，首次 prefill 需要 **数十分钟 JIT 编译**（不是 95s，那是 rope-only 恰好少 op 的场景；全 patch 第一次 prefill 远超 40min）。所有"STILL HUNG"都是 curl 超时 < JIT 编译时间，不是真死锁。
+
+**验证**：py-spy dump 持续显示 `build_ninja`/`file_baton.wait`/`forward` 交替，loadavg 周期性 8→1→8，进程状态 `Sl`（sleeping on subprocess wait，正常）。无 deadlock 帧（没有 `nccl`/`barrier`/`event.wait` 一直 blocking）。
+
+**这意味着所有之前的 kernel 测试（rope-only 能跑、全 patch 死锁）都不可信**——差别只是 rope-only 的 JIT 编译恰好少/快、能在 curl 超时内返回，全 patch 的 JIT 编译多、超时了。**没有真正的死锁**。
+
+### 真正的下一步
+
+要拿到真实 A/B，必须：
+1. **JIT 预编译**：sglang 有 `--compile-model` 或 warmup 机制，预先触发所有 JIT 编译并 cache（`~/.cache`，serve_8gpu.sh 已注释掉 `rm -rf ~/.cache`）。需要跑一次"编译预热"请求，等几十分钟让它把所有 op 编译完并 cache，之后再测真实延迟。
+2. **预热后 A/B**：cache 命中后首次请求仍可能需要 ~95s（load cache），但后续 warm 请求 ~0.7s。用 `profile_requests.py`（已丢第一次 warmup）测。
+3. **正确性**：JIT 编译完成后才能验证输出是否 "Paris"（之前所有 200/JSON decode 错都是 curl 在 JIT 编译期超时返回空，不是输出错误）。
+
+### GEMM/汇编问题的最终答案
+
+即使 JIT 预热完成、所有 patch 跑通、A/B 测出，端到端加速仍受限于：
+- **elementwise <5%**（ptq/silu/rope/topk/swa 在 decode 占比小）
+- **GEMM/attention/MoE dispatch 主导**，vendor 已 ISA 级优化（`MOE_W8A8_I8_PERCHANNEL_MARLIN_ASM_TN`、lightop `.co`），手写 HIP 超不了
+- 真正瓶颈要 hipprof profile 真实推理（需 JIT 预热后）才能定位
+
 ## 5.2 GPU 运维（crash 后必做）
 
 sglang TP worker crash 后显存不释放（zombie VRAM，rocm-smi 显示 68% used 但无 python 进程），导致下次启动 load weight OOM。**每次 crash 后必做**：
