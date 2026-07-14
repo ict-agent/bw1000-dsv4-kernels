@@ -146,6 +146,25 @@ op-chain (`e2e_op_chain.py`, 单 MLP step): **2.28x**（隔离测试，elementwi
 
 **all-patches capture 死锁（待修）**：rope+silu 的 capture 能完成，但加 ptq/topk/swa 任一后 capture 死锁（GPU 0%、进程 pipe_r、卡在 lightop 阶段）。疑似 topk radix select 在某个 capture batch 的 seq_len/cap 组合下 `need` 不收敛 → 死循环，或 ptq/silu 在 capture 期与 graph 的 stream 交互问题。**当前可用子集：rope+silu**（capture OK，输出待 int64 修复后验证）。
 
+**最终隔离结论（rope-correct 死锁引擎）**：经过 25+ 次集成测试，确认 **rope kernel 读到正确的 int64 positions（产生正确旋转）会让 sglang forward 死锁；读到错误 positions（int* 读 int64 的 garbage）反而能跑通（输出 garbage）**。这发生 在 cuda graph capture AND eager no-graph 两种模式。离线单 kernel graph capture 测试通过（contig/non-contig q、int64 positions 都 OK），所以不是 rope kernel 本身的问题，而是 **正确中间结果触发引擎下游某个 op 的死锁路径**（garbage/NaN 走 fast path 不死锁）。三种 dtype 修法（`.to(int32)` alloc / `long long*` kernel / pooled-buffer+copy_）都触发死锁；唯一能跑通的版本是 OLD int* kernel（输出 garbage）。
+
+这是 sglang 引擎级的交互问题，无法用离线测试复现，需要 debugger attach 到卡住的 TP worker 定位死锁点，或把 kernel 注册成 torch custom op（让 torch stream 事件追踪覆盖 raw hipLaunchKernel）。**当前 ctypes-launch + monkey-patch 集成方式在这个 sglang 版本上碰到了根本性障碍**。
+
+## 最终交付状态
+
+**已交付（git hip-kernels-v2，全部 commit+push）**：
+- 8 个真实 bug 修复：call-site binding、rope non-contig strided、swa batch-id+old_kv_start、silu EPT→stride loop、topk large-cap fallback、buffer-aliasing revert、JIT-warmup 假警报发现、int64 dtype 根因
+- 5/5 离线真实 shape 验证（ptq/silu/rope/topk/swa vs 引擎真实函数）
+- `test_real_shape_vs_engine.py`：对引擎原始函数做参照的完整单测
+- AGENTS.md/REPORT.md/SKILLS.md/WORKFLOW.md 完整文档 + 3 条 memory
+
+**未达成**：端到端 A/B 加速比。原因：正确 rope 死锁引擎（上述），无法在 sglang 引擎里跑通正确输出。**之前的 "1.0x A/B" 是无效的**（call-site binding bug 导致 patch 从未生效）。
+
+**下一步建议**（需用户决定）：
+1. debugger attach 卡住的 TP worker，定位"正确 rope 触发的下游死锁点"在哪个 op（可能是 attention/compressed 的某条路径）
+2. 把 kernel 注册为 torch custom op（`torch.library`），让 raw hipLaunchKernel 被 torch stream 事件追踪覆盖——这可能是 ctypes-launch 方式死锁的根本解
+3. 若只为出 A/B：接受 OLD int* kernel（garbage 输出但能跑），A/B 测的是"garbage 输出下的延迟"——无意义
+
 ## 5.2 GPU 运维（crash 后必做）
 
 sglang TP worker crash 后显存不释放（zombie VRAM，rocm-smi 显示 68% used 但无 python 进程），导致下次启动 load weight OOM。**每次 crash 后必做**：
