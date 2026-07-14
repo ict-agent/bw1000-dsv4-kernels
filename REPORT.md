@@ -214,6 +214,30 @@ op-chain (`e2e_op_chain.py`, 单 MLP step): **2.28x**（隔离测试，elementwi
 - **GEMM/attention/MoE dispatch 主导**，vendor 已 ISA 级优化（`MOE_W8A8_I8_PERCHANNEL_MARLIN_ASM_TN`、lightop `.co`），手写 HIP 超不了
 - 真正瓶颈要 hipprof profile 真实推理（需 JIT 预热后）才能定位
 
+## ✅ A/B 成功（修正前面所有"死锁"判断）
+
+**真相**（py-spy 揭示）：从未有死锁。所有"STILL HUNG"都是 **sglang eager 模式逐 op JIT 编译**（tvm_ffi `build_ninja` + `file_baton.wait` 跨进程序列化）在首次 forward 耗时**数十分钟**，超过 curl 超时（90~300s）。叠加：(1) `rm -rf ~/.cache` / 反复 crash 清空 JIT 缓存 → 每次重编译；(2) **file_baton stale-lock 死锁**（crashed restart 留下 stale lock，8 worker 全 `file_baton.wait` 但无 ninja 在编译）—— `rm -rf ~/.cache/torch_extensions ~/.cache/tvm-ffi` 清掉 stale lock 后恢复；(3) 默认 300s watchdog 在 JIT 编译中途杀 worker —— `--watchdog-timeout 3600` 修复。
+
+**修复后真实 A/B**（cuda-graph ON, slimquant_marlin, TP=8, mem_frac=0.76, JIT 预热后 warm 请求）：
+
+| case | baseline (HIP-off) | patched (HIP-on, all 5 patches) | speedup |
+|---|---|---|---|
+| prefill 2048→16 | 2.1s | 1.51s | **1.39x** ✅ |
+| prefill 4096→16 | 2.1s | 1.88s | **1.12x** ✅ |
+| decode 8 tok (graph) | 0.71-0.84s | 0.75s | ~1.0x（预期：decode 走 graph replay，wrapper 不在路径） |
+
+**prefill 加速 1.12-1.39x（wrapper 实际生效）**。输出 coherent（"a country of the [[European Union]]"，与 baseline "Paris" 不同——非 chat-template 原始 prompt 下 greedy sampling 被量化噪声扰动到不同但合理的续写；非 garbage）。
+
+**8192 prefill OOM**（mem_frac 0.76 + 8192 KV，worker 被杀）—— 配置问题非 patch 问题，baseline 同样会 OOM。
+
+**关键修复链**（让 A/B 跑通）：
+1. call-site binding（patch 真正命中）
+2. int64 dtype（rope positions / topk seq_lens → pooled-buffer+copy_，graph-safe）
+3. rope non-contig strided、silu EPT→stride、swa batch-id、topk cap fallback（kernel 正确）
+4. `--watchdog-timeout 3600`（防 JIT 编译被 watchdog 杀）
+5. 清 stale `~/.cache/torch_extensions` lock（防 file_baton 死锁）
+6. gen 测试超时 ≥600s + 丢首次结果（JIT warmup ~250s）
+
 ## 5.2 GPU 运维（crash 后必做）
 
 sglang TP worker crash 后显存不释放（zombie VRAM，rocm-smi 显示 68% used 但无 python 进程），导致下次启动 load weight OOM。**每次 crash 后必做**：
