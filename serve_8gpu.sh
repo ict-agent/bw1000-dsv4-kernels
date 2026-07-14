@@ -50,4 +50,5 @@ python3 -m sglang.launch_server \
   --mem-fraction-static ${MEM_FRACTION:-0.76} \
   --disable-overlap-schedule \
   --disable-flashinfer-autotune \
+  --watchdog-timeout ${WATCHDOG_TIMEOUT:-3600} \
   2>&1 | tee -a /workspace/server_${MODE:-run}.log
